@@ -45,6 +45,10 @@ python benchmarks/bench_attention_comparison.py
 echo "Running fused GeLU+Linear benchmark..."
 python benchmarks/bench_fused_gelu.py
 
+# v1.0.5: RoPE Embedding benchmark
+echo "Running RoPE embedding benchmark..."
+python benchmarks/bench_rope.py
+
 echo ""
 echo "════════════════════════════════════════════════════════════"
 echo "  All benchmarks complete. Results in benchmarks/results/"

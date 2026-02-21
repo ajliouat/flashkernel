@@ -13,6 +13,7 @@
 #include "reduce.cuh"
 #include "flash_attention.cuh"
 #include "fused_gelu_linear.cuh"
+#include "rope.cuh"
 
 namespace py = pybind11;
 
@@ -262,6 +263,116 @@ torch::Tensor fused_gelu_linear(
     return Y;
 }
 
+// ─── v1.0.5: RoPE wrappers ──────────────────────────────────────────────────
+
+std::vector<torch::Tensor> rope_precompute_freqs(
+    int max_seq_len,
+    int head_dim,
+    float base
+) {
+    TORCH_CHECK(head_dim % 2 == 0, "head_dim must be even, got ", head_dim);
+
+    int half_dim = head_dim / 2;
+    auto options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
+    auto cos_table = torch::empty({max_seq_len, half_dim}, options);
+    auto sin_table = torch::empty({max_seq_len, half_dim}, options);
+
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+    flashkernel::rope_precompute_freqs(
+        cos_table.data_ptr<float>(),
+        sin_table.data_ptr<float>(),
+        max_seq_len, head_dim, base, stream
+    );
+
+    return {cos_table, sin_table};
+}
+
+std::vector<torch::Tensor> rope_forward(
+    torch::Tensor Q,
+    torch::Tensor K,
+    torch::Tensor cos_table,
+    torch::Tensor sin_table
+) {
+    TORCH_CHECK(Q.device().is_cuda(), "Q must be on CUDA device");
+    TORCH_CHECK(K.device().is_cuda(), "K must be on CUDA device");
+    TORCH_CHECK(Q.is_contiguous(), "Q must be contiguous");
+    TORCH_CHECK(K.is_contiguous(), "K must be contiguous");
+    TORCH_CHECK(Q.scalar_type() == torch::kFloat16, "Q must be float16");
+    TORCH_CHECK(K.scalar_type() == torch::kFloat16, "K must be float16");
+    TORCH_CHECK(Q.dim() == 4, "Q must be 4-D [B, H, N, D]");
+    TORCH_CHECK(K.dim() == 4, "K must be 4-D [B, H, N, D]");
+
+    int batch    = Q.size(0);
+    int heads    = Q.size(1);
+    int seq_len  = Q.size(2);
+    int head_dim = Q.size(3);
+
+    TORCH_CHECK(head_dim % 2 == 0, "head_dim must be even, got ", head_dim);
+    TORCH_CHECK(K.sizes() == Q.sizes(), "K shape must match Q shape");
+    TORCH_CHECK(cos_table.size(0) >= seq_len,
+                "cos_table max_seq_len (", cos_table.size(0),
+                ") must be >= seq_len (", seq_len, ")");
+    TORCH_CHECK(cos_table.size(1) == head_dim / 2,
+                "cos_table half_dim mismatch");
+    TORCH_CHECK(sin_table.sizes() == cos_table.sizes(),
+                "sin_table shape must match cos_table");
+    TORCH_CHECK(cos_table.scalar_type() == torch::kFloat32, "cos_table must be float32");
+    TORCH_CHECK(sin_table.scalar_type() == torch::kFloat32, "sin_table must be float32");
+
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+    // Apply in-place to clones (don't modify originals unexpectedly)
+    auto Q_out = Q.clone();
+    auto K_out = K.clone();
+
+    flashkernel::rope_forward(
+        reinterpret_cast<half*>(Q_out.data_ptr<at::Half>()),
+        reinterpret_cast<half*>(K_out.data_ptr<at::Half>()),
+        cos_table.data_ptr<float>(),
+        sin_table.data_ptr<float>(),
+        batch, heads, seq_len, head_dim, stream
+    );
+
+    return {Q_out, K_out};
+}
+
+std::vector<torch::Tensor> rope_forward_fused(
+    torch::Tensor Q,
+    torch::Tensor K,
+    float base
+) {
+    TORCH_CHECK(Q.device().is_cuda(), "Q must be on CUDA device");
+    TORCH_CHECK(K.device().is_cuda(), "K must be on CUDA device");
+    TORCH_CHECK(Q.is_contiguous(), "Q must be contiguous");
+    TORCH_CHECK(K.is_contiguous(), "K must be contiguous");
+    TORCH_CHECK(Q.scalar_type() == torch::kFloat16, "Q must be float16");
+    TORCH_CHECK(K.scalar_type() == torch::kFloat16, "K must be float16");
+    TORCH_CHECK(Q.dim() == 4, "Q must be 4-D [B, H, N, D]");
+    TORCH_CHECK(K.dim() == 4, "K must be 4-D [B, H, N, D]");
+
+    int batch    = Q.size(0);
+    int heads    = Q.size(1);
+    int seq_len  = Q.size(2);
+    int head_dim = Q.size(3);
+
+    TORCH_CHECK(head_dim % 2 == 0, "head_dim must be even, got ", head_dim);
+    TORCH_CHECK(K.sizes() == Q.sizes(), "K shape must match Q shape");
+
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+    auto Q_out = Q.clone();
+    auto K_out = K.clone();
+
+    flashkernel::rope_forward_fused(
+        reinterpret_cast<half*>(Q_out.data_ptr<at::Half>()),
+        reinterpret_cast<half*>(K_out.data_ptr<at::Half>()),
+        batch, heads, seq_len, head_dim, base, stream
+    );
+
+    return {Q_out, K_out};
+}
+
 // ─── Device Info ────────────────────────────────────────────────────────────
 
 py::dict device_info(int device_id = 0) {
@@ -325,11 +436,30 @@ PYBIND11_MODULE(_flashkernel_C, m) {
           py::arg("bias") = c10::nullopt,
           py::arg("use_tanh_approx") = false);
 
+    // v1.0.5: RoPE Embedding
+    m.def("rope_precompute_freqs", &rope_precompute_freqs,
+          "Precompute RoPE cos/sin frequency tables on device.\n"
+          "Returns (cos_table, sin_table) each [max_seq_len, head_dim/2] fp32.",
+          py::arg("max_seq_len"), py::arg("head_dim"),
+          py::arg("base") = 10000.0f);
+
+    m.def("rope_forward", &rope_forward,
+          "Apply Rotary Position Embedding to Q and K using precomputed tables.\n"
+          "Input: Q, K [B, H, N, D] fp16. Returns (Q_rot, K_rot) fp16.\n"
+          "cos_table, sin_table: [max_seq_len, D/2] fp32.",
+          py::arg("Q"), py::arg("K"),
+          py::arg("cos_table"), py::arg("sin_table"));
+
+    m.def("rope_forward_fused", &rope_forward_fused,
+          "Apply RoPE to Q and K with on-the-fly sin/cos computation.\n"
+          "No precomputed table needed — saves HBM bandwidth.\n"
+          "Input: Q, K [B, H, N, D] fp16. Returns (Q_rot, K_rot) fp16.",
+          py::arg("Q"), py::arg("K"),
+          py::arg("base") = 10000.0f);
+
     // Version info
-    m.attr("__version__") = "1.0.4";
+    m.attr("__version__") = "1.0.5";
 
     // Future kernel bindings:
-    // v1.0.3: (Triton — pure Python, no C++ binding needed)
-    // v1.0.5: m.def("rope_forward", ...)
     // v1.0.6: m.def("paged_kv_cache_append", ...) m.def("paged_kv_cache_read", ...)
 }

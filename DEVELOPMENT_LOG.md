@@ -5,7 +5,7 @@
 
 ---
 
-## Status: v1.0.0 COMPLETE — Scaffold shipped
+## Status: v1.0.5 IN PROGRESS — RoPE Embedding
 
 ### Pre-Development Research (Week 0)
 - [ ] Read FlashAttention paper + blog post
@@ -444,5 +444,110 @@ MOD:  ROADMAP.md                             (v1.0.4 tasks marked)
 - Profile with ncu: visualize HBM traffic reduction
 - Commit benchmark results CSV
 - v1.0.5: RoPE Embedding (CUDA + Triton)
+
+---
+
+## 2025-02-21 — v1.0.5: Rotary Position Embedding (RoPE)
+
+### What was built
+
+**Goal:** Implement RoPE (Su et al., 2021) — the position encoding used by LLaMA, Mistral, GPT-NeoX, and most modern LLMs. Encodes position by rotating pairs of dimensions in Q and K using position-dependent angles, creating a relative position encoding where `<RoPE(q, m), RoPE(k, n)>` depends only on `(m - n)`.
+
+**CUDA kernels** (`src/cuda/rope.cu`, 220+ lines):
+- **Frequency table precomputation**: `rope_precompute_freqs_kernel` — one thread per `(pos, dim_pair)`, computes `θ_i = pos / base^(2i/d)` using `__sincosf()` for fast simultaneous sin+cos. Output: `cos_table[max_seq_len, d/2]` and `sin_table[max_seq_len, d/2]` in fp32.
+- **Table-lookup forward**: `rope_forward_kernel` — loads Q/K element pairs in fp32, looks up precomputed cos/sin, applies rotation, stores back in fp16. Launches separately for Q and K.
+- **Fused forward** (no table): `rope_forward_fused_kernel` — computes `powf(base, 2i/d)` and `__sincosf(angle)` per-thread in registers. Trades bandwidth for compute: no cos/sin table reads from HBM. Better for one-shot inference.
+- All three kernels: flat grid mapping, `BLOCK_SIZE=256`, no shared memory needed (embarrassingly parallel).
+
+**Triton kernels** (`src/triton/rope.py`, 260+ lines):
+- **Precompute**: matching kernel using `tl.cos`, `tl.sin`, `tl.exp(-exponent * tl.log(base))` for numerical stability
+- **Table-lookup forward**: `_rope_forward_kernel` — stride-based addressing, fp32 intermediates, masked loads/stores for boundary
+- **Fused forward**: `_rope_forward_fused_kernel` — in-register freq computation using `tl.exp/tl.cos/tl.sin`
+- `BLOCK_SIZE=1024` for Triton (larger blocks for coalescing)
+- All three with Python wrappers including full input validation
+
+**C++ bindings** (`src/bindings/torch_ext.cpp`):
+- `rope_precompute_freqs(max_seq_len, head_dim, base)` → `(cos_table, sin_table)` — allocates CUDA tensors, calls kernel
+- `rope_forward(Q, K, cos_table, sin_table)` → `(Q_rot, K_rot)` — clones inputs (non-destructive), applies rotation
+- `rope_forward_fused(Q, K, base)` → `(Q_rot, K_rot)` — clones inputs, on-the-fly sin/cos
+- Full input validation: CUDA, fp16, 4-D, even head_dim, shape match, table size ≥ seq_len
+
+**Tests** (`tests/test_rope.py`, 400+ lines, 60+ test cases):
+- `TestRopePrecomputeFreqs`: shape (d=64, d=128), correctness vs reference, position-zero (cos=1, sin=0), custom base, Triton matches CUDA
+- `TestRopeForwardCUDAD64`: basic (B=1,H=8,N=512), batched (B=4,N=1024), long seq (N=4096), sweep [128→2048]
+- `TestRopeForwardCUDAD128`: basic (B=1,H=8,N=512), large (B=8,H=12,N=2048), sweep [128→1024]
+- `TestRopeForwardCUDAFused`: d=64, d=128, matches table variant, seq sweep, custom base
+- `TestTritonRopeForward`: d=64, d=128, seq sweep [128→2048]
+- `TestTritonRopeForwardFused`: d=64, d=128, matches table variant
+- `TestCUDAvsTritonRope`: table d=64/d=128, fused d=64, seq sweep — cross-validation
+- `TestRopeProperties`: norm preservation (rotation ≈ isometry), position-0 = identity, different positions → different rotations
+- `TestRopeOutputs`: shape, dtype, device, finite, not-inplace-on-original
+- `TestRopeDeterminism`: CUDA table, CUDA fused, Triton — same input → same output
+- `TestRopeBoundary`: various head_dims [32,48,64,96,128,256], non-pow-2 seq [1,3,7,15,33,100,513], single token
+- `TestRopeErrors`: CPU raises, fp32 raises, odd head_dim, shape mismatch, 3-D input, table too short
+
+**Benchmark** (`benchmarks/bench_rope.py`):
+- 5-way comparison: PyTorch reference, CUDA table, CUDA fused, Triton table, Triton fused
+- Sequence sweep: N=[512,1024,2048,4096] × D=[64,128] at B=4, H=8
+- Batch sweep: B=[1,4,8] at N=1024, D=[64,128]
+- Table vs fused direct comparison (5 configs)
+- Effective bandwidth calculation (GB/s)
+- Summary table in ROADMAP format
+- CSV export to `benchmarks/results/rope.csv`
+
+### Design decisions
+
+1. **Two variants (table vs fused)** — Table-lookup is better for decoding where the same table is reused across many steps. Fused is better for one-shot (prefill) where table HBM bandwidth is wasted. Both share the same rotation logic.
+
+2. **Flat grid mapping, no shared memory** — RoPE is embarrassingly parallel (each element pair is independent). No need for shared memory or complex thread cooperation. Simple `BLOCK_SIZE=256` (CUDA) or `1024` (Triton) grid.
+
+3. **`__sincosf()` for CUDA** — PTX instruction that computes sin and cos simultaneously in ~2x the cost of one. More efficient than separate `sinf()` + `cosf()` calls.
+
+4. **`tl.exp(-exponent * tl.log(base))` for Triton** — Triton has no `pow` primitive for vector exponentiation. Using the exp-log formulation: `base^x = exp(x * log(base))`. Numerically equivalent and JIT-friendly.
+
+5. **Clone in bindings, not in-place** — The C++ binding clones Q and K before applying rotation. This matches PyTorch conventions (functions return new tensors). Triton variants modify in-place and return for convenience (caller should clone if needed).
+
+6. **fp32 intermediates** — Load fp16 → fp32, rotate in fp32, store fp32 → fp16. Avoids precision loss from fp16 sin/cos values.
+
+### RoPE: why it matters
+
+```
+Traditional absolute position encoding:
+  - Adds position vector to token embeddings
+  - No relative position awareness
+  - Fixed maximum sequence length
+
+RoPE:
+  - Rotates Q, K by position-dependent angle
+  - Inner product <RoPE(q,m), RoPE(k,n)> depends on (m-n) only
+  - Natural relative position encoding
+  - Extrapolates to longer sequences than training
+  - Used by: LLaMA (1/2/3), Mistral, Qwen, GPT-NeoX, PaLM
+
+Memory overhead:
+  Table variant:  2 × max_seq_len × (D/2) × 4 bytes (cos + sin, fp32)
+    For max_seq=8192, D=128: 2 × 8192 × 64 × 4 = 4 MB
+  Fused variant: 0 bytes (computed on-the-fly)
+```
+
+### Files added/modified
+```
+NEW:  src/cuda/rope.cu                (220+ lines — 3 kernels + launchers)
+NEW:  src/cuda/rope.cuh               (header with 3 API functions)
+NEW:  src/triton/rope.py              (260+ lines — 3 Triton kernels + wrappers)
+NEW:  tests/test_rope.py              (400+ lines, 60+ tests, 12 classes)
+NEW:  benchmarks/bench_rope.py        (5-way comparison benchmark)
+MOD:  src/bindings/torch_ext.cpp      (v1.0.5, 3 new bindings)
+MOD:  flashkernel/__init__.py         (v1.0.5, expose rope_* + triton_rope_*)
+MOD:  pyproject.toml                  (version → 1.0.5)
+MOD:  setup.py                        (version → 1.0.5)
+MOD:  benchmarks/run_all.sh           (added bench_rope.py)
+MOD:  ROADMAP.md                      (v1.0.5 tasks marked)
+```
+
+### Next steps
+- Run full benchmark suite + Nsight Compute profiling on T4
+- Compare table vs fused: does fused win at large seq? Does table win at small seq?
+- v1.0.6: Paged KV-Cache (block-level virtual memory for KV cache)
 
 ---

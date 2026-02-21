@@ -7,7 +7,7 @@ Build from source:
 Requires CUDA toolkit and PyTorch with CUDA support.
 """
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 
 def _load_extension():
@@ -31,8 +31,14 @@ def _load_extension():
         - fused_gelu_linear(X, W, bias, use_tanh_approx) -> Y
         - triton_fused_gelu_linear(X, W, bias, use_tanh_approx) -> Y
 
+      v1.0.5:
+        - rope_precompute_freqs(max_seq_len, head_dim, base) -> (cos, sin)
+        - rope_forward(Q, K, cos_table, sin_table) -> (Q_rot, K_rot)
+        - rope_forward_fused(Q, K, base) -> (Q_rot, K_rot)
+        - triton_rope_forward(Q, K, cos_table, sin_table) -> (Q_rot, K_rot)
+        - triton_rope_forward_fused(Q, K, base) -> (Q_rot, K_rot)
+
     Future versions will add:
-      - rope_forward (v1.0.5)
       - paged_kv_cache_append / _read (v1.0.6)
     """
     try:
@@ -41,6 +47,9 @@ def _load_extension():
             reduce_sum, reduce_max,
             flash_attention_forward as _flash_attn_fwd,
             fused_gelu_linear as _fused_gelu_linear_c,
+            rope_precompute_freqs as _rope_precompute_freqs_c,
+            rope_forward as _rope_forward_c,
+            rope_forward_fused as _rope_forward_fused_c,
         )
         return {
             "vector_add": vector_add,
@@ -49,6 +58,9 @@ def _load_extension():
             "reduce_max": reduce_max,
             "flash_attention_forward": _flash_attn_fwd,
             "fused_gelu_linear": _fused_gelu_linear_c,
+            "rope_precompute_freqs": _rope_precompute_freqs_c,
+            "rope_forward": _rope_forward_c,
+            "rope_forward_fused": _rope_forward_fused_c,
         }
     except ImportError:
         return None
@@ -63,6 +75,9 @@ if _ext is not None:
     reduce_max = _ext["reduce_max"]
     _flash_attention_forward_c = _ext["flash_attention_forward"]
     _fused_gelu_linear_c = _ext["fused_gelu_linear"]
+    _rope_precompute_freqs_c = _ext["rope_precompute_freqs"]
+    _rope_forward_c = _ext["rope_forward"]
+    _rope_forward_fused_c = _ext["rope_forward_fused"]
 else:
     vector_add = None
     device_info = None
@@ -70,6 +85,9 @@ else:
     reduce_max = None
     _flash_attention_forward_c = None
     _fused_gelu_linear_c = None
+    _rope_precompute_freqs_c = None
+    _rope_forward_c = None
+    _rope_forward_fused_c = None
 
 
 def _not_compiled(*args, **kwargs):
@@ -211,3 +229,110 @@ def triton_fused_gelu_linear(X, W, bias=None, use_tanh_approx=False):
     except ImportError:
         from flashkernel._triton.fused_gelu_linear import triton_fused_gelu_linear as _tfgl
     return _tfgl(X, W, bias=bias, use_tanh_approx=use_tanh_approx)
+
+
+# ─── v1.0.5: RoPE Embedding ────────────────────────────────────────────────
+
+def rope_precompute_freqs(max_seq_len, head_dim, base=10000.0):
+    """
+    Precompute RoPE cos/sin frequency tables on device — CUDA kernel.
+
+    Args:
+        max_seq_len: Maximum sequence length
+        head_dim: Head dimension (must be even)
+        base: Frequency base (default: 10000.0)
+
+    Returns:
+        cos_table: [max_seq_len, head_dim/2] fp32
+        sin_table: [max_seq_len, head_dim/2] fp32
+    """
+    if _rope_precompute_freqs_c is None:
+        _not_compiled()
+    return _rope_precompute_freqs_c(max_seq_len, head_dim, base)
+
+
+def rope_forward(Q, K, cos_table, sin_table):
+    """
+    Apply Rotary Position Embedding to Q and K — CUDA kernel with table lookup.
+
+    Uses precomputed cos/sin tables. Best when reusing tables across
+    multiple forward passes (e.g., during decoding).
+
+    Args:
+        Q: [batch, num_heads, seq_len, head_dim] fp16 CUDA tensor
+        K: [batch, num_heads, seq_len, head_dim] fp16 CUDA tensor
+        cos_table: [max_seq_len, head_dim/2] fp32 — from rope_precompute_freqs
+        sin_table: [max_seq_len, head_dim/2] fp32 — from rope_precompute_freqs
+
+    Returns:
+        Q_rot: [batch, num_heads, seq_len, head_dim] fp16 — rotated Q
+        K_rot: [batch, num_heads, seq_len, head_dim] fp16 — rotated K
+
+    head_dim must be even.
+    """
+    if _rope_forward_c is None:
+        _not_compiled()
+    return _rope_forward_c(Q, K, cos_table, sin_table)
+
+
+def rope_forward_fused(Q, K, base=10000.0):
+    """
+    Apply RoPE to Q and K with on-the-fly sin/cos — CUDA fused variant.
+
+    Computes sin/cos per-thread in registers. No precomputed table needed.
+    Saves HBM bandwidth but does slightly more compute per element.
+    Best for one-shot inference or when tables can't be cached.
+
+    Args:
+        Q: [batch, num_heads, seq_len, head_dim] fp16 CUDA tensor
+        K: [batch, num_heads, seq_len, head_dim] fp16 CUDA tensor
+        base: Frequency base (default: 10000.0)
+
+    Returns:
+        Q_rot: [batch, num_heads, seq_len, head_dim] fp16 — rotated Q
+        K_rot: [batch, num_heads, seq_len, head_dim] fp16 — rotated K
+
+    head_dim must be even.
+    """
+    if _rope_forward_fused_c is None:
+        _not_compiled()
+    return _rope_forward_fused_c(Q, K, base)
+
+
+def triton_rope_forward(Q, K, cos_table, sin_table):
+    """
+    Apply RoPE to Q and K using precomputed tables — Triton kernel.
+
+    Args:
+        Q: [B, H, N, D] fp16 CUDA tensor (modified in-place)
+        K: [B, H, N, D] fp16 CUDA tensor (modified in-place)
+        cos_table: [max_seq_len, D/2] fp32
+        sin_table: [max_seq_len, D/2] fp32
+
+    Returns:
+        Q, K (modified in-place, returned for convenience)
+    """
+    try:
+        from src.triton.rope import triton_rope_forward as _trf
+    except ImportError:
+        from flashkernel._triton.rope import triton_rope_forward as _trf
+    return _trf(Q, K, cos_table, sin_table)
+
+
+def triton_rope_forward_fused(Q, K, base=10000.0):
+    """
+    Apply RoPE to Q and K with on-the-fly sin/cos — Triton fused variant.
+
+    Args:
+        Q: [B, H, N, D] fp16 CUDA tensor (modified in-place)
+        K: [B, H, N, D] fp16 CUDA tensor (modified in-place)
+        base: Frequency base (default: 10000.0)
+
+    Returns:
+        Q, K (modified in-place, returned for convenience)
+    """
+    try:
+        from src.triton.rope import triton_rope_forward_fused as _trff
+    except ImportError:
+        from flashkernel._triton.rope import triton_rope_forward_fused as _trff
+    return _trff(Q, K, base=base)

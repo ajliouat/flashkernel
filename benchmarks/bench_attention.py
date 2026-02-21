@@ -81,7 +81,7 @@ def bench_seq_sweep(warmup=50, iters=200):
     ]
 
     results = []
-    runner = BenchmarkRunner(warmup_iters=warmup, timed_iters=iters)
+    runner = BenchmarkRunner(warmup=warmup, timed=iters)
 
     for B, H, N, D in configs:
         scale = 1.0 / math.sqrt(D)
@@ -96,11 +96,6 @@ def bench_seq_sweep(warmup=50, iters=200):
         fk_result = runner.run(fk_fn)
         fk_peak = get_peak_memory_mb()
         fk_result.name = f"FlashKernel B={B} H={H} N={N} D={D}"
-        fk_result.extra.update({
-            "B": B, "H": H, "N": N, "D": D,
-            "backend": "flashkernel",
-            "peak_mem_mb": fk_peak,
-        })
 
         # PyTorch SDPA
         torch.cuda.reset_peak_memory_stats()
@@ -111,11 +106,6 @@ def bench_seq_sweep(warmup=50, iters=200):
         sdpa_result = runner.run(sdpa_fn)
         sdpa_peak = get_peak_memory_mb()
         sdpa_result.name = f"PyTorch SDPA B={B} H={H} N={N} D={D}"
-        sdpa_result.extra.update({
-            "B": B, "H": H, "N": N, "D": D,
-            "backend": "pytorch_sdpa",
-            "peak_mem_mb": sdpa_peak,
-        })
 
         # Naive (only for small N to avoid OOM)
         if N <= 2048:
@@ -125,11 +115,6 @@ def bench_seq_sweep(warmup=50, iters=200):
             naive_result = runner.run(naive_fn)
             naive_peak = get_peak_memory_mb()
             naive_result.name = f"Naive O(N²) B={B} H={H} N={N} D={D}"
-            naive_result.extra.update({
-                "B": B, "H": H, "N": N, "D": D,
-                "backend": "naive",
-                "peak_mem_mb": naive_peak,
-            })
             batch_results = [fk_result, sdpa_result, naive_result]
         else:
             batch_results = [fk_result, sdpa_result]
@@ -161,7 +146,7 @@ def bench_batch_sweep(warmup=50, iters=200):
     ]
 
     results = []
-    runner = BenchmarkRunner(warmup_iters=warmup, timed_iters=iters)
+    runner = BenchmarkRunner(warmup=warmup, timed=iters)
 
     for B, H, N, D in configs:
         scale = 1.0 / math.sqrt(D)
@@ -173,7 +158,6 @@ def bench_batch_sweep(warmup=50, iters=200):
             return flashkernel.flash_attention_forward(Q, K, V, scale=scale)
         fk_result = runner.run(fk_fn)
         fk_result.name = f"FlashKernel B={B} H={H} N={N} D={D}"
-        fk_result.extra.update({"B": B, "H": H, "N": N, "D": D, "backend": "flashkernel"})
 
         def sdpa_fn():
             return F.scaled_dot_product_attention(
@@ -181,7 +165,6 @@ def bench_batch_sweep(warmup=50, iters=200):
             )
         sdpa_result = runner.run(sdpa_fn)
         sdpa_result.name = f"PyTorch SDPA B={B} H={H} N={N} D={D}"
-        sdpa_result.extra.update({"B": B, "H": H, "N": N, "D": D, "backend": "pytorch_sdpa"})
 
         results.extend([fk_result, sdpa_result])
 
@@ -206,7 +189,7 @@ def bench_causal(warmup=50, iters=200):
     ]
 
     results = []
-    runner = BenchmarkRunner(warmup_iters=warmup, timed_iters=iters)
+    runner = BenchmarkRunner(warmup=warmup, timed=iters)
 
     for B, H, N, D in configs:
         scale = 1.0 / math.sqrt(D)
@@ -218,13 +201,11 @@ def bench_causal(warmup=50, iters=200):
             return flashkernel.flash_attention_forward(Q, K, V, scale=scale, is_causal=False)
         nc_result = runner.run(fk_noncausal)
         nc_result.name = f"Non-causal N={N}"
-        nc_result.extra.update({"N": N, "causal": False})
 
         def fk_causal():
             return flashkernel.flash_attention_forward(Q, K, V, scale=scale, is_causal=True)
         c_result = runner.run(fk_causal)
         c_result.name = f"Causal N={N}"
-        c_result.extra.update({"N": N, "causal": True})
 
         results.extend([nc_result, c_result])
 
@@ -270,7 +251,8 @@ def main():
     # Export
     if all_results:
         os.makedirs(os.path.dirname(args.output), exist_ok=True)
-        all_results[0].to_csv(args.output, all_results)
+        for i, r in enumerate(all_results):
+            r.to_csv(args.output, append=(i > 0))
         print(f"\nResults saved to: {args.output}")
 
 

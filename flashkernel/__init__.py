@@ -7,7 +7,7 @@ Build from source:
 Requires CUDA toolkit and PyTorch with CUDA support.
 """
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 
 def _load_extension():
@@ -23,6 +23,9 @@ def _load_extension():
         - reduce_max(input) -> Tensor
       v1.0.2:
         - flash_attention_forward(Q, K, V, scale, is_causal) -> (O, L)
+
+      v1.0.3:
+        - triton_flash_attention_forward(Q, K, V, scale, is_causal) -> (O, L)
 
     Future versions will add:
       - fused_gelu_linear (v1.0.4)
@@ -132,3 +135,26 @@ def triton_reduce_max(input):
     except ImportError:
         from flashkernel._triton.reduce import triton_reduce_max as _triton_max
     return _triton_max(input)
+
+
+def triton_flash_attention_forward(Q, K, V, scale=None, is_causal=False):
+    """
+    Triton FlashAttention forward — same tiled online-softmax algorithm
+    as the CUDA kernel, autotuned over tile sizes and warp counts.
+
+    Args:
+        Q: [B, H, N, D] fp16 CUDA tensor
+        K: [B, H, N, D] fp16 CUDA tensor
+        V: [B, H, N, D] fp16 CUDA tensor
+        scale: Softmax scale (default: 1/sqrt(D))
+        is_causal: Apply causal attention mask
+
+    Returns:
+        O: [B, H, N, D] fp16 — attention output
+        L: [B, H, N]    fp32 — log-sum-exp
+    """
+    try:
+        from src.triton.flash_attention import triton_flash_attention_forward as _tfn
+    except ImportError:
+        from flashkernel._triton.flash_attention import triton_flash_attention_forward as _tfn
+    return _tfn(Q, K, V, scale=scale, is_causal=is_causal)

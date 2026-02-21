@@ -47,7 +47,7 @@ def bench_reduce_sum(warmup: int = 100, iters: int = 1000):
     sizes = [1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000]
     results = []
 
-    runner = BenchmarkRunner(warmup_iters=warmup, timed_iters=iters)
+    runner = BenchmarkRunner(warmup=warmup, timed=iters)
 
     for n in sizes:
         x = torch.randn(n, device="cuda", dtype=torch.float32)
@@ -98,7 +98,7 @@ def bench_reduce_max(warmup: int = 100, iters: int = 1000):
     sizes = [1_000, 10_000, 100_000, 1_000_000, 10_000_000]
     results = []
 
-    runner = BenchmarkRunner(warmup_iters=warmup, timed_iters=iters)
+    runner = BenchmarkRunner(warmup=warmup, timed=iters)
 
     for n in sizes:
         x = torch.randn(n, device="cuda", dtype=torch.float32)
@@ -151,7 +151,7 @@ def bench_reduce_rows(warmup: int = 100, iters: int = 1000):
     ]
     results = []
 
-    runner = BenchmarkRunner(warmup_iters=warmup, timed_iters=iters)
+    runner = BenchmarkRunner(warmup=warmup, timed=iters)
 
     for rows, cols in shapes:
         x = torch.randn(rows, cols, device="cuda", dtype=torch.float32)

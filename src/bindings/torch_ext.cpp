@@ -263,7 +263,7 @@ PYBIND11_MODULE(_flashkernel_C, m) {
           py::arg("is_causal") = false);
 
     // Version info
-    m.attr("__version__") = "1.0.2";
+    m.attr("__version__") = "1.0.3";
 
     // Future kernel bindings:
     // v1.0.3: (Triton — pure Python, no C++ binding needed)

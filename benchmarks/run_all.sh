@@ -37,6 +37,10 @@ python benchmarks/bench_reduce.py
 echo "▸ Running attention benchmark (FlashAttention forward)..."
 python benchmarks/bench_attention.py
 
+# v1.0.3: CUDA vs Triton attention comparison
+echo "▸ Running CUDA vs Triton attention comparison..."
+python benchmarks/bench_attention_comparison.py
+
 echo ""
 echo "════════════════════════════════════════════════════════════"
 echo "  All benchmarks complete. Results in benchmarks/results/"

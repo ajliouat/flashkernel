@@ -250,21 +250,26 @@ Fallback to 32×64 tiles for head_dim=128.
 ### Tasks
 
 ```
-[ ] Implement Triton flash attention using tl.load, tl.store, tl.dot
-[ ] Match CUDA kernel's tile strategy for fair comparison
-[ ] Triton auto-tune over BLOCK_M, BLOCK_N, num_warps
-[ ] Write correctness tests
-[ ] Run head-to-head benchmark sweep
-[ ] Generate comparison CSV
+[x] Implement Triton flash attention using tl.load, tl.store, tl.dot, tl.trans
+[x] Match CUDA kernel's tile strategy for fair comparison (64x64 and 32x64 in autotune configs)
+[x] Triton auto-tune over BLOCK_M, BLOCK_N, num_warps (8 configs)
+[x] Write correctness tests (40+ test cases, 8 test classes incl. cross-validation)
+[x] Write 4-way comparison benchmark (PyTorch eager, torch.compile, Triton, CUDA)
+[ ] Run head-to-head benchmark sweep on T4
+[ ] Generate comparison CSV with real numbers
 [ ] Write analysis: where does CUDA win vs Triton? Why?
-[ ] Update DEVELOPMENT_LOG.md
-[ ] git tag v1.0.3
+[x] Fix BenchmarkRunner constructor bug in bench_attention.py + bench_reduce.py
+[x] Add extra field to BenchmarkResult harness
+[x] Update DEVELOPMENT_LOG.md
+[x] git tag v1.0.3
 ```
+
+**Code complete:** 2025-02-21 — awaiting GPU benchmarks on T4
 
 ### Definition of Done
 - ✅ Triton kernel correct (same error bounds as CUDA)
-- ✅ Comparison CSV with 4 backends committed
-- ✅ Written paragraph in DEVELOPMENT_LOG analyzing CUDA vs Triton perf difference
+- ⬜ Comparison CSV with 4 backends committed (needs T4)
+- ⬜ Written paragraph in DEVELOPMENT_LOG analyzing CUDA vs Triton perf difference (needs T4)
 - ✅ Tagged `v1.0.3`
 
 ---

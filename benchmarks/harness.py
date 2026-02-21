@@ -42,6 +42,9 @@ class BenchmarkResult:
     p99_ms: float = 0.0
     peak_mem_mb: float = 0.0
 
+    # Extensible metadata (used by benchmarks to store backend, config, etc.)
+    extra: dict = field(default_factory=dict)
+
     def compute_stats(self):
         """Compute statistics from raw timing data."""
         if not self.times_ms:

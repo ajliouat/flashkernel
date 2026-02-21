@@ -223,3 +223,122 @@ MOD:  benchmarks/run_all.sh             (added bench_attention.py)
 - v1.0.3: Triton FlashAttention — same algorithm in Triton, head-to-head comparison
 
 ---
+
+## 2025-02-21 — v1.0.3: Triton FlashAttention + CUDA vs Triton Comparison
+
+### What was built
+
+**Triton FlashAttention kernel** (`src/triton/flash_attention.py`, 200+ lines):
+- **Same algorithm as CUDA v1.0.2** — Dao et al. 2022 tiled attention with online softmax
+- **Key Triton primitives**:
+  - `tl.load` / `tl.store` for HBM ↔ SRAM transfer
+  - `tl.dot(q, tl.trans(k))` for Q @ K^T matmul (Tensor Core dispatch on fp16)
+  - `tl.dot(p.to(fp16), v)` for P @ V accumulation
+  - `tl.exp`, `tl.max`, `tl.sum` for online softmax
+  - `tl.where` for causal and boundary masking
+- **Autotune**: 8 configurations including CUDA-matching tile sizes
+  - CUDA-matching: BLOCK_M=64 BLOCK_N=64 (for d=64) and BLOCK_M=32 BLOCK_N=64 (for d=128)
+  - Exploration: BLOCK_M=[32,64,128] × BLOCK_N=[32,64] × num_warps=[4,8]
+  - Autotune key: `['N', 'D_MODEL']` — re-tunes for different seq lengths and head dims
+- **Causal masking**: early KV-loop termination (`kv_end = (pid_m+1)*BLOCK_M`) + per-element mask
+- **Online softmax**: running m, l, O in fp32 blocks (not per-thread like CUDA — Triton handles the parallelism)
+- **Log-sum-exp output**: L[B,H,N] = m + log(l) for potential backward pass
+- **Input validation**: same checks as CUDA — CUDA device, fp16, 4-D, head_dim ∈ {64,128}, shape match
+- **Stride-based addressing**: supports any contiguous layout, not hardcoded to row-major
+
+**Grid mapping:**
+```
+Grid: (B * H, cdiv(N, BLOCK_M))
+Program (pid_bh, pid_m):
+  b = pid_bh // H
+  h = pid_bh % H
+  → handles BLOCK_M query rows for (batch=b, head=h)
+```
+
+**Algorithm per program instance (BLOCK_M query rows):**
+```
+1. Load Q block: [BLOCK_M, D] from HBM
+2. For each KV block (n_start = 0, BLOCK_N, 2*BLOCK_N, ...):
+   a. Load K: [BLOCK_N, D], V: [BLOCK_N, D]
+   b. S = tl.dot(Q, tl.trans(K)) * scale           [BLOCK_M, BLOCK_N]
+   c. Apply boundary mask (offs_n < N → -inf)
+   d. Apply causal mask (offs_m >= offs_n → keep, else → -inf)
+   e. m_new = max(m_i, rowmax(S))
+   f. alpha = exp(m_i - m_new)                       rescale factor
+   g. P = exp(S - m_new)                             softmax numerator
+   h. l_i = alpha * l_i + rowsum(P)
+   i. O = alpha * O + tl.dot(P.to(fp16), V)         accumulate
+   j. m_i = m_new
+3. O = O / l_i                                       normalize
+4. Store O (fp16) and LSE = m + log(l) (fp32)
+```
+
+**Tests** (`tests/test_triton_attention.py`, 300+ lines, 40+ test cases):
+- `TestTritonFlashAttentionD64`: basic B=1/H=8/N=512, batched B=4/N=1024, long N=4096, sweep [128→2048]
+- `TestTritonFlashAttentionD128`: B=8/H=12/N=2048, small config, sweep [128→1024]
+- `TestTritonFlashAttentionCausal`: d=64, d=128, long seq N=2048, sweep [64→1024]
+- `TestTritonFlashAttentionBoundary`: non-divisible N [65,100,127,129,200,513,1000] for d=64; [33,63,97,255] for d=128
+- `TestTritonFlashAttentionOutputs`: shapes/dtypes for d=64 and d=128, LSE finite, output finite, custom scale
+- `TestTritonFlashAttentionDeterminism`: same input → bit-exact output (d=64, d=128, causal)
+- `TestTritonFlashAttentionErrors`: CPU, fp32, wrong head_dim, shape mismatch, 3-D
+- `TestCUDAvsTritonCrossValidation`: d=64 non-causal, d=128 non-causal, d=64 causal, d=128 causal, seq sweep [128→1024], large batch B=4
+
+**Comparison benchmark** (`benchmarks/bench_attention_comparison.py`):
+- 4-way comparison: PyTorch eager, torch.compile, Triton (ours), CUDA (ours)
+- Sequence sweep: N=[512,1024,2048,4096] × D=[64,128]
+- Batch sweep: B=[1,4,8] × D=[64,128] — Triton vs CUDA
+- Causal comparison: N=[512,1024,2048,4096] with speedup calculation
+- ROADMAP-format summary table per head_dim
+- CSV export to `benchmarks/results/attention_comparison.csv`
+
+**Bug fixes:**
+- Fixed `BenchmarkRunner(warmup_iters=..., timed_iters=...)` → `BenchmarkRunner(warmup=..., timed=...)` in bench_attention.py and bench_reduce.py (3 + 3 instances)
+- Added `extra: dict` field to `BenchmarkResult` in harness.py — fixes AttributeError when benchmarks try to set metadata
+- Fixed batch CSV export in bench_attention.py: was passing list as `append` bool
+
+### Design decisions
+1. **Autotune with CUDA-matching configs** — Include Br=64 Bc=64 and Br=32 Bc=64 in autotune pool so Triton can select the same tile sizes as CUDA. Additional configs let Triton explore better alternatives.
+2. **Stride-based addressing** — Pass all 4 strides per tensor instead of assuming contiguous. More general and lets Triton compiler optimize access patterns.
+3. **`tl.dot(p.to(q.dtype), v)` for P@V** — Cast softmax probabilities from fp32 back to fp16 before the dot product. This enables Tensor Core dispatch (fp16×fp16→fp32 accumulate). Critical for performance.
+4. **Early KV termination for causal** — `kv_end = (pid_m + 1) * BLOCK_M` skips future KV blocks entirely. Boundary mask handles partial blocks where `kv_end > N`.
+5. **`raise RuntimeError` not `assert`** — Python wrapper uses explicit RuntimeError for input validation (same as CUDA binding) rather than assert statements. Proper error messages for users.
+6. **Separate test file** — `test_triton_attention.py` is independent from `test_flash_attention.py`. Cross-validation tests in a dedicated class require both CUDA and Triton to be available.
+
+### CUDA vs Triton: structural comparison
+
+| Aspect | CUDA C++ (v1.0.2) | Triton (v1.0.3) |
+|--------|-------------------|-----------------|
+| Lines of kernel code | ~180 | ~80 |
+| Thread mapping | 1 thread = 1 query row | 1 program = BLOCK_M rows |
+| Shared memory | Explicit `__shared__` allocation | Implicit (compiler manages) |
+| Matmul | Manual dot product loop | `tl.dot()` (auto Tensor Core) |
+| Softmax | Per-thread registers | Per-block Triton tensors |
+| Tile selection | Manual template dispatch | Autotune (8 configs) |
+| Boundary handling | Manual padding in smem | `tl.where` masks |
+| Compilation | nvcc at build time | JIT at first call |
+| GPU portability | SM 7.5 only (hardcoded) | Any SM >= 7.0 |
+
+**Key insight:** Triton trades fine-grained control for productivity. The CUDA kernel explicitly manages shared memory, registers, and warp-level operations. The Triton kernel expresses the same algorithm in ~2.5× less code, with the compiler handling memory management. Performance comparison awaits T4 benchmarks.
+
+### Files added/modified
+```
+NEW:  src/triton/flash_attention.py          (200+ lines — Triton kernel + wrapper)
+NEW:  tests/test_triton_attention.py         (300+ lines, 40+ test cases, 8 classes)
+NEW:  benchmarks/bench_attention_comparison.py (4-way comparison benchmark)
+MOD:  flashkernel/__init__.py                (v1.0.3, expose triton_flash_attention_forward)
+MOD:  pyproject.toml                         (version → 1.0.3)
+MOD:  setup.py                               (version → 1.0.3)
+MOD:  benchmarks/run_all.sh                  (added bench_attention_comparison.py)
+MOD:  benchmarks/harness.py                  (added extra field to BenchmarkResult)
+MOD:  benchmarks/bench_attention.py          (fixed constructor args, CSV export)
+MOD:  benchmarks/bench_reduce.py             (fixed constructor args)
+MOD:  ROADMAP.md                             (v1.0.3 tasks marked complete)
+```
+
+### Next steps
+- Run full 4-way benchmark on T4: populate comparison CSV
+- Analyze: is Triton using Tensor Cores? Check with Nsight
+- Write analysis paragraph: where does CUDA win vs Triton and why
+- v1.0.4: Fused GeLU+Linear (CUDA + Triton)
+
+---

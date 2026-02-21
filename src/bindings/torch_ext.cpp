@@ -11,6 +11,7 @@
 
 #include "stub.cuh"
 #include "reduce.cuh"
+#include "flash_attention.cuh"
 
 namespace py = pybind11;
 
@@ -146,6 +147,68 @@ torch::Tensor reduce_max(torch::Tensor input) {
     return output.squeeze(0);  // return scalar tensor
 }
 
+// ─── v1.0.2: FlashAttention wrappers ────────────────────────────────────────
+
+std::vector<torch::Tensor> flash_attention_forward(
+    torch::Tensor Q,
+    torch::Tensor K,
+    torch::Tensor V,
+    float scale,
+    bool is_causal
+) {
+    // Validate inputs
+    TORCH_CHECK(Q.device().is_cuda(), "Q must be on CUDA device");
+    TORCH_CHECK(K.device().is_cuda(), "K must be on CUDA device");
+    TORCH_CHECK(V.device().is_cuda(), "V must be on CUDA device");
+    TORCH_CHECK(Q.is_contiguous(), "Q must be contiguous");
+    TORCH_CHECK(K.is_contiguous(), "K must be contiguous");
+    TORCH_CHECK(V.is_contiguous(), "V must be contiguous");
+    TORCH_CHECK(Q.scalar_type() == torch::kFloat16,
+                "Q must be float16 (FlashAttention operates in fp16)");
+    TORCH_CHECK(K.scalar_type() == torch::kFloat16, "K must be float16");
+    TORCH_CHECK(V.scalar_type() == torch::kFloat16, "V must be float16");
+
+    // Shape: [batch, num_heads, seq_len, head_dim]
+    TORCH_CHECK(Q.dim() == 4, "Q must be 4-D [B, H, N, D]");
+    TORCH_CHECK(K.dim() == 4, "K must be 4-D [B, H, N, D]");
+    TORCH_CHECK(V.dim() == 4, "V must be 4-D [B, H, N, D]");
+
+    int batch    = Q.size(0);
+    int heads    = Q.size(1);
+    int seq_len  = Q.size(2);
+    int head_dim = Q.size(3);
+
+    TORCH_CHECK(K.size(0) == batch && K.size(1) == heads,
+                "K batch/heads must match Q");
+    TORCH_CHECK(V.size(0) == batch && V.size(1) == heads,
+                "V batch/heads must match Q");
+    TORCH_CHECK(K.size(2) == seq_len, "K seq_len must match Q");
+    TORCH_CHECK(V.size(2) == seq_len, "V seq_len must match Q");
+    TORCH_CHECK(K.size(3) == head_dim, "K head_dim must match Q");
+    TORCH_CHECK(V.size(3) == head_dim, "V head_dim must match Q");
+    TORCH_CHECK(head_dim == 64 || head_dim == 128,
+                "head_dim must be 64 or 128, got ", head_dim);
+
+    // Allocate output
+    auto O = torch::empty_like(Q);  // [B, H, N, D] fp16
+    auto L = torch::empty({batch, heads, seq_len},
+                          torch::TensorOptions().device(Q.device()).dtype(torch::kFloat32));
+
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+    flashkernel::flash_attention_forward(
+        reinterpret_cast<const half*>(Q.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(K.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(V.data_ptr<at::Half>()),
+        reinterpret_cast<half*>(O.data_ptr<at::Half>()),
+        L.data_ptr<float>(),
+        batch, heads, seq_len, head_dim,
+        scale, is_causal, stream
+    );
+
+    return {O, L};
+}
+
 // ─── Device Info ────────────────────────────────────────────────────────────
 
 py::dict device_info(int device_id = 0) {
@@ -190,11 +253,19 @@ PYBIND11_MODULE(_flashkernel_C, m) {
           "Full reduction to a scalar.",
           py::arg("input"));
 
+    // v1.0.2: FlashAttention
+    m.def("flash_attention_forward", &flash_attention_forward,
+          "FlashAttention forward pass (tiled, online softmax, no N×N materialization).\n"
+          "Input: Q, K, V [B, H, N, D] fp16. Returns (O [B,H,N,D] fp16, L [B,H,N] fp32).\n"
+          "Supports head_dim=64 (tiles 64×64) and head_dim=128 (tiles 32×64).",
+          py::arg("Q"), py::arg("K"), py::arg("V"),
+          py::arg("scale") = -1.0f,
+          py::arg("is_causal") = false);
+
     // Version info
-    m.attr("__version__") = "1.0.1";
+    m.attr("__version__") = "1.0.2";
 
     // Future kernel bindings:
-    // v1.0.2: m.def("flash_attention_forward", ...)
     // v1.0.3: (Triton — pure Python, no C++ binding needed)
     // v1.0.4: m.def("fused_gelu_linear", ...)
     // v1.0.5: m.def("rope_forward", ...)

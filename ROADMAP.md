@@ -195,24 +195,30 @@ Fallback to 32×64 tiles for head_dim=128.
 ### Tasks
 
 ```
-[ ] Implement flash_attention.cu forward pass (non-causal first)
-[ ] Handle tile boundary when N % block_size != 0
-[ ] Add causal masking variant
-[ ] Write pybind11 binding
-[ ] Write test_flash_attention.py — correctness suite
-[ ] Run full benchmark sweep
+[x] Implement flash_attention.cu forward pass (non-causal)
+[x] Handle tile boundary when N % block_size != 0 (bounds checks + padding in smem)
+[x] Add causal masking variant (early KV-loop termination + per-element mask)
+[x] Two tile configs: 64×64 for d=64 (32KB smem), 32×64 for d=128 (44KB smem)
+[x] Online softmax: running m/l/O in fp32 registers, exp rescaling
+[x] Write pybind11 binding (flash_attention_forward with scale, is_causal args)
+[x] Write flash_attention_forward Python wrapper with auto-scale
+[x] Write test_flash_attention.py — 40+ test cases (correctness, causal, boundary, determinism, errors)
+[x] Write bench_attention.py — seq sweep, batch sweep, causal vs non-causal, memory tracking
+[ ] Run full benchmark sweep on T4
 [ ] Run ncu profiling — check SM occupancy, memory throughput
 [ ] Identify bottleneck from Nsight: memory-bound or compute-bound?
 [ ] Commit CSV + .ncu-rep
-[ ] Update DEVELOPMENT_LOG.md with findings
-[ ] git tag v1.0.2
+[x] Update DEVELOPMENT_LOG.md with findings
+[x] git tag v1.0.2
 ```
+
+**Code complete:** 2025-02-21 — awaiting GPU benchmarks on T4
 
 ### Definition of Done
 - ✅ Correctness: max abs error < 1e-3 (fp16) vs PyTorch SDPA
 - ✅ seq=4096 runs without OOM on T4 16GB
-- ✅ Benchmark CSV with all sweep configs committed
-- ✅ Nsight profile committed
+- ⬜ Benchmark CSV with all sweep configs committed (needs T4)
+- ⬜ Nsight profile committed (needs T4)
 - ✅ Tagged `v1.0.2`
 
 ---

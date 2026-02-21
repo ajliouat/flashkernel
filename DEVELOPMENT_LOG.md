@@ -136,3 +136,90 @@ DEL:  src/triton/.gitkeep         (replaced by reduce.py)
 - v1.0.2: Tiled FlashAttention forward (CUDA C++) — the core kernel
 
 ---
+
+## 2025-02-21 — v1.0.2: Tiled FlashAttention (CUDA C++)
+
+**The core kernel.** This is the reason the project exists.
+
+### What was built
+
+**CUDA kernel** (`src/cuda/flash_attention.cu`, 280+ lines):
+- **Tiled FlashAttention forward pass** — Dao et al., 2022 algorithm
+- **Online softmax**: running max `m`, sum `l`, and output `O` in fp32 registers
+  - No N×N attention matrix ever materialized in HBM
+  - Memory: O(N) instead of O(N²)
+- **Two tile configurations** based on shared memory budget (T4 = 48 KB):
+  - `head_dim=64`: Br=64 × Bc=64 → Q:8K + K:8K + V:8K = 24 KB smem ✓
+  - `head_dim=128`: Br=32 × Bc=64 → Q:8K + K:16K + V:16K = 40 KB smem ✓
+- **Causal masking**: early termination in KV-loop (`max_kv_block = q_row/Bc + 1`) + per-element `-inf` mask
+- **Boundary handling**: padding zeros in shared memory for N not divisible by tile size
+- **Grid mapping**: `(batch*heads, ceil(N/Br))` — one thread per query row in the tile
+- **Log-sum-exp output**: `L[b,h,n] = m + log(l)` stored for potential backward pass
+
+**Key algorithm steps per thread (one query row):**
+```
+1. Load my Q row to shared memory
+2. For each KV block:
+   a. Cooperatively load K, V to shared memory
+   b. Compute dot(Q_row, K_col) * scale for all Bc columns → s_vals[]
+   c. Apply causal mask if needed (s = -inf for future tokens)
+   d. row_max = max(s_vals)
+   e. Rescale: alpha = exp(m_old - m_new), O *= alpha, l *= alpha
+   f. P = exp(s - m_new), accumulate l += P, O += P * V
+3. Normalize: O /= l, write O (fp16) and L = m + log(l) to HBM
+```
+
+**pybind11 bindings** (`torch_ext.cpp`):
+- `flash_attention_forward(Q, K, V, scale=-1, is_causal=false)` → `(O, L)`
+- Full input validation: CUDA, contiguous, fp16, 4-D, shape match, head_dim ∈ {64, 128}
+- Auto-scale: if `scale < 0`, computes `1/sqrt(D)` in Python wrapper
+
+**Python API** (`flashkernel/__init__.py`):
+- `flash_attention_forward(Q, K, V, scale=None, is_causal=False)` → `(O, L)`
+- Auto-computes scale = 1/√d if not specified
+- Clean docstring with supported configs
+
+**Tests** (`tests/test_flash_attention.py`, 300+ lines, 40+ test cases):
+- `TestFlashAttentionD64`: basic (B=1,H=8,N=512), batched (B=4,N=1024), long seq (N=4096), sweep [128→2048]
+- `TestFlashAttentionD128`: B=8,H=12,N=2048, small config, sweep [128→1024]
+- `TestFlashAttentionCausal`: d=64, d=128, long seq N=2048, sweep [64→1024]
+- `TestFlashAttentionBoundary`: non-divisible N: [65, 100, 127, 129, 200, 513, 1000] for d=64; [33, 63, 97, 255] for d=128
+- `TestFlashAttentionOutputs`: shapes, dtypes, LSE finite, output finite, custom scale
+- `TestFlashAttentionDeterminism`: same input → bit-exact same output
+- `TestFlashAttentionErrors`: CPU raises, fp32 raises, wrong head_dim, shape mismatch, 3-D input
+- All correctness tests compare against `F.scaled_dot_product_attention` reference
+
+**Benchmark** (`benchmarks/bench_attention.py`):
+- Sequence sweep: N=[128,256,512,1024,2048,4096] × d=[64,128], FlashKernel vs SDPA vs naive
+- Batch sweep: B=[1,4,8] × d=[64,128] at N=1024
+- Causal vs non-causal: N=[512,1024,2048], measures speedup from early termination
+- Peak memory tracking per config
+- CSV export to `benchmarks/results/attention_cuda.csv`
+
+### Design decisions
+1. **One thread per query row** — simple mapping, each thread does full dot products and accumulation. Not the most parallel approach but clean and correct. Optimization target for v1.0.8.
+2. **fp32 accumulators in registers** — all intermediate values (m, l, O, S) in fp32. Only final output cast to fp16.
+3. **Dynamic shared memory** — `extern __shared__` with size computed by host. Allows same kernel template for different tile sizes.
+4. **Template parameters for tile dims** — `<Br, Bc, D>` compile-time constants enable loop unrolling and register allocation.
+5. **Causal early termination** — `max_kv_block = (q_row / Bc) + 1` skips all future KV blocks entirely. Expected ~2x speedup for causal at large N.
+6. **Log-sum-exp stored** — `L[b,h,n] = m + log(l)` saved for potential backward pass implementation.
+
+### Files added/modified
+```
+NEW:  src/cuda/flash_attention.cu       (280 lines — the core kernel)
+NEW:  src/cuda/flash_attention.cuh      (header with API)
+NEW:  tests/test_flash_attention.py     (40+ test cases, 300+ lines)
+NEW:  benchmarks/bench_attention.py     (seq/batch/causal sweeps + memory)
+MOD:  src/bindings/torch_ext.cpp        (added flash_attention_forward binding)
+MOD:  flashkernel/__init__.py           (expose flash_attention_forward with auto-scale)
+MOD:  pyproject.toml                    (version → 1.0.2)
+MOD:  setup.py                          (version → 1.0.2)
+MOD:  benchmarks/run_all.sh             (added bench_attention.py)
+```
+
+### Next steps
+- Run full benchmark sweep + Nsight Compute on T4 instance
+- Identify: memory-bound or compute-bound? Check SM occupancy, HBM throughput
+- v1.0.3: Triton FlashAttention — same algorithm in Triton, head-to-head comparison
+
+---

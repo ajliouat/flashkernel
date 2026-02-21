@@ -33,9 +33,9 @@ python benchmarks/bench_stub.py
 echo "▸ Running reduction benchmark (sum, max, row-wise)..."
 python benchmarks/bench_reduce.py
 
-# v1.0.2: Attention benchmark (will be added)
-# echo "▸ Running attention benchmark..."
-# python benchmarks/bench_attention.py
+# v1.0.2: Attention benchmark
+echo "▸ Running attention benchmark (FlashAttention forward)..."
+python benchmarks/bench_attention.py
 
 echo ""
 echo "════════════════════════════════════════════════════════════"

@@ -14,6 +14,7 @@
 #include "flash_attention.cuh"
 #include "fused_gelu_linear.cuh"
 #include "rope.cuh"
+#include "paged_kv_cache.cuh"
 
 namespace py = pybind11;
 
@@ -373,6 +374,117 @@ std::vector<torch::Tensor> rope_forward_fused(
     return {Q_out, K_out};
 }
 
+// ─── v1.0.6: Paged KV-Cache wrappers ────────────────────────────────────────
+
+void paged_kv_cache_append(
+    torch::Tensor pool,
+    torch::Tensor slot_mapping,
+    torch::Tensor new_keys,
+    torch::Tensor new_values
+) {
+    TORCH_CHECK(pool.device().is_cuda(), "pool must be on CUDA device");
+    TORCH_CHECK(slot_mapping.device().is_cuda(), "slot_mapping must be on CUDA device");
+    TORCH_CHECK(new_keys.device().is_cuda(), "new_keys must be on CUDA device");
+    TORCH_CHECK(new_values.device().is_cuda(), "new_values must be on CUDA device");
+    TORCH_CHECK(pool.is_contiguous(), "pool must be contiguous");
+    TORCH_CHECK(slot_mapping.is_contiguous(), "slot_mapping must be contiguous");
+    TORCH_CHECK(new_keys.is_contiguous(), "new_keys must be contiguous");
+    TORCH_CHECK(new_values.is_contiguous(), "new_values must be contiguous");
+
+    TORCH_CHECK(pool.scalar_type() == torch::kFloat16, "pool must be float16");
+    TORCH_CHECK(slot_mapping.scalar_type() == torch::kInt32, "slot_mapping must be int32");
+    TORCH_CHECK(new_keys.scalar_type() == torch::kFloat16, "new_keys must be float16");
+    TORCH_CHECK(new_values.scalar_type() == torch::kFloat16, "new_values must be float16");
+
+    // Pool: [num_pages, 2, num_heads, page_size, head_dim]
+    TORCH_CHECK(pool.dim() == 5, "pool must be 5-D [P, 2, H, S, D]");
+    TORCH_CHECK(pool.size(1) == 2, "pool dim 1 must be 2 (K/V)");
+
+    int num_pages = pool.size(0);
+    int num_heads = pool.size(2);
+    int page_size = pool.size(3);
+    int head_dim  = pool.size(4);
+
+    // slot_mapping: [total_tokens]
+    TORCH_CHECK(slot_mapping.dim() == 1, "slot_mapping must be 1-D");
+    int total_tokens = slot_mapping.size(0);
+
+    // new_keys/values: [total_tokens, num_heads, head_dim]
+    TORCH_CHECK(new_keys.dim() == 3, "new_keys must be 3-D [T, H, D]");
+    TORCH_CHECK(new_values.dim() == 3, "new_values must be 3-D [T, H, D]");
+    TORCH_CHECK(new_keys.size(0) == total_tokens,
+                "new_keys tokens (", new_keys.size(0), ") must match slot_mapping (", total_tokens, ")");
+    TORCH_CHECK(new_values.size(0) == total_tokens,
+                "new_values tokens must match slot_mapping");
+    TORCH_CHECK(new_keys.size(1) == num_heads, "new_keys heads must match pool");
+    TORCH_CHECK(new_keys.size(2) == head_dim, "new_keys head_dim must match pool");
+    TORCH_CHECK(new_values.size(1) == num_heads, "new_values heads must match pool");
+    TORCH_CHECK(new_values.size(2) == head_dim, "new_values head_dim must match pool");
+
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+    flashkernel::paged_kv_cache_append(
+        reinterpret_cast<half*>(pool.data_ptr<at::Half>()),
+        slot_mapping.data_ptr<int>(),
+        reinterpret_cast<const half*>(new_keys.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(new_values.data_ptr<at::Half>()),
+        total_tokens, num_heads, page_size, head_dim, num_pages, stream
+    );
+}
+
+std::vector<torch::Tensor> paged_kv_cache_read(
+    torch::Tensor pool,
+    torch::Tensor block_table,
+    torch::Tensor seq_lens,
+    int max_seq_len
+) {
+    TORCH_CHECK(pool.device().is_cuda(), "pool must be on CUDA device");
+    TORCH_CHECK(block_table.device().is_cuda(), "block_table must be on CUDA device");
+    TORCH_CHECK(seq_lens.device().is_cuda(), "seq_lens must be on CUDA device");
+    TORCH_CHECK(pool.is_contiguous(), "pool must be contiguous");
+    TORCH_CHECK(block_table.is_contiguous(), "block_table must be contiguous");
+    TORCH_CHECK(seq_lens.is_contiguous(), "seq_lens must be contiguous");
+
+    TORCH_CHECK(pool.scalar_type() == torch::kFloat16, "pool must be float16");
+    TORCH_CHECK(block_table.scalar_type() == torch::kInt32, "block_table must be int32");
+    TORCH_CHECK(seq_lens.scalar_type() == torch::kInt32, "seq_lens must be int32");
+
+    TORCH_CHECK(pool.dim() == 5, "pool must be 5-D [P, 2, H, S, D]");
+    TORCH_CHECK(pool.size(1) == 2, "pool dim 1 must be 2 (K/V)");
+    TORCH_CHECK(block_table.dim() == 2, "block_table must be 2-D [B, max_blocks]");
+    TORCH_CHECK(seq_lens.dim() == 1, "seq_lens must be 1-D [B]");
+
+    int batch = block_table.size(0);
+    int max_blocks_per_seq = block_table.size(1);
+    int num_heads = pool.size(2);
+    int page_size = pool.size(3);
+    int head_dim  = pool.size(4);
+
+    TORCH_CHECK(seq_lens.size(0) == batch,
+                "seq_lens (", seq_lens.size(0), ") must match block_table batch (", batch, ")");
+    TORCH_CHECK(max_seq_len > 0, "max_seq_len must be positive");
+
+    // Allocate output (zero-filled for padding positions)
+    auto K_out = torch::zeros({batch, num_heads, max_seq_len, head_dim},
+                              pool.options());
+    auto V_out = torch::zeros({batch, num_heads, max_seq_len, head_dim},
+                              pool.options());
+
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+    flashkernel::paged_kv_cache_read(
+        reinterpret_cast<const half*>(pool.data_ptr<at::Half>()),
+        block_table.data_ptr<int>(),
+        seq_lens.data_ptr<int>(),
+        reinterpret_cast<half*>(K_out.data_ptr<at::Half>()),
+        reinterpret_cast<half*>(V_out.data_ptr<at::Half>()),
+        batch, num_heads, max_seq_len, page_size, head_dim,
+        max_blocks_per_seq, stream
+    );
+
+    return {K_out, V_out};
+}
+
 // ─── Device Info ────────────────────────────────────────────────────────────
 
 py::dict device_info(int device_id = 0) {
@@ -457,9 +569,24 @@ PYBIND11_MODULE(_flashkernel_C, m) {
           py::arg("Q"), py::arg("K"),
           py::arg("base") = 10000.0f);
 
+    // v1.0.6: Paged KV-Cache
+    m.def("paged_kv_cache_append", &paged_kv_cache_append,
+          "Append new KV tokens to the paged cache pool.\n"
+          "pool: [P, 2, H, S, D] fp16. slot_mapping: [T] int32.\n"
+          "new_keys, new_values: [T, H, D] fp16. Modifies pool in-place.",
+          py::arg("pool"), py::arg("slot_mapping"),
+          py::arg("new_keys"), py::arg("new_values"));
+
+    m.def("paged_kv_cache_read", &paged_kv_cache_read,
+          "Scatter-gather read from paged KV cache.\n"
+          "pool: [P, 2, H, S, D] fp16. block_table: [B, max_blocks] int32.\n"
+          "seq_lens: [B] int32. Returns (K, V) each [B, H, max_seq_len, D] fp16.",
+          py::arg("pool"), py::arg("block_table"),
+          py::arg("seq_lens"), py::arg("max_seq_len"));
+
     // Version info
-    m.attr("__version__") = "1.0.5";
+    m.attr("__version__") = "1.0.6";
 
     // Future kernel bindings:
-    // v1.0.6: m.def("paged_kv_cache_append", ...) m.def("paged_kv_cache_read", ...)
+    // v1.0.7: GPT-2 end-to-end integration
 }

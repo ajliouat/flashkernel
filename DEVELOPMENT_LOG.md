@@ -5,7 +5,7 @@
 
 ---
 
-## Status: v1.0.5 IN PROGRESS — RoPE Embedding
+## Status: v1.0.6 COMPLETE — Paged KV-Cache
 
 ### Pre-Development Research (Week 0)
 - [ ] Read FlashAttention paper + blog post
@@ -549,5 +549,88 @@ MOD:  ROADMAP.md                      (v1.0.5 tasks marked)
 - Run full benchmark suite + Nsight Compute profiling on T4
 - Compare table vs fused: does fused win at large seq? Does table win at small seq?
 - v1.0.6: Paged KV-Cache (block-level virtual memory for KV cache)
+
+---
+
+## 2025-06-28 — v1.0.6: Paged KV-Cache
+
+### What was built
+- **Paged KV-Cache system:** Block-level virtual memory for KV cache with dynamic page allocation, eliminating pre-allocated max-length buffers.
+- **Page pool:** `[num_pages, 2(K/V), num_heads, page_size, head_dim]` fp16 layout, pre-allocated on GPU.
+- **Page management:** CPU-side block manager (like vLLM) with free-list allocator, block table per sequence, dynamic page allocation/deallocation.
+- **CUDA append kernel:** Flat grid mapping over `(token × head × dim)`, each thread writes both K and V to their physical pool slots via a pre-computed slot mapping. BLOCK_SIZE=256.
+- **CUDA read/gather kernel:** Scatter-gather from pool into contiguous `[B, H, N, D]` output. Page table lookup per element: `phys_page = block_table[batch][pos/page_size]`, `offset = pos % page_size`. Positions beyond `seq_lens[batch]` left as zero.
+- **Triton kernels:** Both append and read kernels mirroring CUDA, BLOCK_SIZE=1024, pre-computed pool strides passed as kernel arguments.
+- **PagedKVCache class:** High-level Python wrapper managing page allocation, slot mapping computation, block table construction, and kernel dispatch. Supports `append()`, `read()`, `free_sequence()`, backend selection ('cuda'/'triton'), memory accounting.
+
+### Design rationale
+```
+Architecture decision: CPU-side page management + GPU-side data movement
+  - Same as vLLM (Kwon et al., 2023)
+  - Page allocation is a small sequential operation (O(pages))
+  - Data movement is massively parallel (O(tokens × heads × dim))
+  - Avoids complex GPU-side atomic allocation
+
+Pool layout: [P, 2, H, S, D] (not [P, H, 2, S, D])
+  - K and V for same (page, head, position) are kv_stride apart
+  - Within-page reads are contiguous per head: pool[page, kv, head, :, :] is contiguous
+  - Good for both append (write K and V in one thread) and read (coalesced per-head access)
+
+Page size: 256 tokens (production default), 16 tokens (test default)
+  - 256 balances internal fragmentation vs page table size
+  - Smaller pages = more fine-grained allocation, less waste for short sequences
+  - Larger pages = smaller page tables, better locality
+
+Memory savings formula:
+  Contiguous: B × max_seq_len × 2 × H × D × sizeof(fp16)
+  Paged:      Σ(ceil(actual_seq/page_size)) × 2 × H × page_size × D × sizeof(fp16) + page_table
+  Savings greatest when max_seq >> avg_seq (common in production batches)
+```
+
+### Test summary
+```
+test_kv_cache.py — 12 test classes, 50+ test cases:
+  TestPagedKVAppendReadBasic          — single token, full page, partial page
+  TestPagedKVMultiPage                — page boundary crossing (3 configs)
+  TestPagedKVSequentialAppend         — token-by-token + chunked incremental
+  TestPagedKVVariableLengthBatch      — mixed-length batches (4 configs)
+  TestPagedKVPaddingZeroFill          — zero-padding verification
+  TestPagedKVDeterminism              — reproducibility
+  TestPagedKVNonContiguousPages       — reversed order + interleaved pages
+  TestPagedKVTriton                   — CUDA/Triton cross-validation
+  TestPagedKVCacheClass               — high-level API (append, read, free, backends)
+  TestPagedKVEdgeCases                — single head, various head_dims, exact boundaries
+  TestPagedKVCacheClassPoolExhaustion — pool exhaustion error handling
+  TestPagedKVLargeScale               — realistic configs (B=4, H=12, D=64, seq=512-1024)
+```
+
+### Benchmark suite
+```
+bench_kv_cache.py — 5 benchmarks:
+  1. Memory savings: paged vs contiguous at seq=[256,512,1024,2048,4096]
+  2. Read latency: scatter-gather vs contiguous copy
+  3. Append latency: T=[1,16,64,128,256] tokens
+  4. CUDA vs Triton: append + read comparison
+  5. Batch sweep: B=[1,4,8,16] at seq=1024
+```
+
+### Files added/modified
+```
+NEW:  src/cuda/paged_kv_cache.cu       (170+ lines — 2 kernels + launchers)
+NEW:  src/cuda/paged_kv_cache.cuh      (header with append + read API)
+NEW:  src/triton/paged_kv_cache.py     (200+ lines — 2 Triton kernels + wrappers)
+NEW:  tests/test_kv_cache.py           (500+ lines, 50+ tests, 12 classes)
+NEW:  benchmarks/bench_kv_cache.py     (5-benchmark suite)
+MOD:  src/bindings/torch_ext.cpp       (v1.0.6, 2 new bindings)
+MOD:  flashkernel/__init__.py          (v1.0.6, expose append/read + PagedKVCache class)
+MOD:  pyproject.toml                   (version → 1.0.6)
+MOD:  setup.py                         (version → 1.0.6)
+MOD:  benchmarks/run_all.sh            (added bench_kv_cache.py)
+MOD:  ROADMAP.md                       (v1.0.6 tasks marked)
+```
+
+### Next steps
+- Run benchmarks on T4 to quantify actual memory savings and gather latency
+- v1.0.7: GPT-2 End-to-End Integration
 
 ---

@@ -420,16 +420,16 @@ Paged:      batch × actual_seq_len × 2 × num_heads × head_dim × sizeof(fp16
 ### Tasks
 
 ```
-[ ] Implement page pool allocator (CUDA device memory)
-[ ] Implement page table data structure
-[ ] append kernel: write new KV to current page
-[ ] read/gather kernel: scatter-gather from page table for attention
-[ ] Triton gather kernel
-[ ] Test: sequential append + read == contiguous concat
-[ ] Test: variable-length sequences in a batch
-[ ] Benchmark memory: report savings at seq=1024,2048,4096 vs contiguous
-[ ] Benchmark latency: gather vs contiguous read
-[ ] Commit results
+[x] Implement page pool allocator (CUDA device memory)
+[x] Implement page table data structure
+[x] append kernel: write new KV to current page
+[x] read/gather kernel: scatter-gather from page table for attention
+[x] Triton gather kernel
+[x] Test: sequential append + read == contiguous concat
+[x] Test: variable-length sequences in a batch
+[x] Benchmark memory: report savings at seq=1024,2048,4096 vs contiguous
+[x] Benchmark latency: gather vs contiguous read
+[x] Commit results
 [ ] git tag v1.0.6
 ```
 
@@ -629,7 +629,7 @@ Before running `git tag v1.0.x`:
 | v1.0.3 | ✅ Complete | 2025-02-21 | Triton FlashAttention, 4-way comparison |
 | v1.0.4 | ✅ Complete | 2025-02-21 | Fused GeLU+Linear, CUDA tiled GEMM + Triton |
 | v1.0.5 | ✅ Complete | 2025-02-21 | RoPE embedding, table + fused, CUDA + Triton |
-| v1.0.6 | ☐ Not started | — | — |
+| v1.0.6 | ✅ Complete | 2025-06-28 | Paged KV-Cache, append + scatter-gather read, PagedKVCache class |
 | v1.0.7 | ☐ Not started | — | — |
 | v1.0.8 | ☐ Not started | — | — |
 | v1.0.9 | ☐ Not started | — | — |

@@ -49,6 +49,10 @@ python benchmarks/bench_fused_gelu.py
 echo "Running RoPE embedding benchmark..."
 python benchmarks/bench_rope.py
 
+# v1.0.6: Paged KV-Cache benchmark
+echo "Running paged KV-cache benchmark..."
+python benchmarks/bench_kv_cache.py
+
 echo ""
 echo "════════════════════════════════════════════════════════════"
 echo "  All benchmarks complete. Results in benchmarks/results/"

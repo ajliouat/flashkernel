@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flashkernel"
-version = "1.0.5"
+version = "1.0.6"
 description = "Custom CUDA C++ and Triton kernels for transformer inference"
 readme = "README.md"
 license = {text = "Apache-2.0"}

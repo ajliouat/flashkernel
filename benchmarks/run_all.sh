@@ -38,8 +38,12 @@ echo "▸ Running attention benchmark (FlashAttention forward)..."
 python benchmarks/bench_attention.py
 
 # v1.0.3: CUDA vs Triton attention comparison
-echo "▸ Running CUDA vs Triton attention comparison..."
+echo "Running CUDA vs Triton attention comparison..."
 python benchmarks/bench_attention_comparison.py
+
+# v1.0.4: Fused GeLU+Linear benchmark
+echo "Running fused GeLU+Linear benchmark..."
+python benchmarks/bench_fused_gelu.py
 
 echo ""
 echo "════════════════════════════════════════════════════════════"

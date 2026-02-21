@@ -316,19 +316,19 @@ Test both. Report max error between them.
 ### Tasks
 
 ```
-[ ] Implement CUDA fused_gelu_linear.cu with wmma (Tensor Cores)
-[ ] Implement Triton version with tl.dot + custom GeLU
-[ ] Write correctness tests: multiple M/N/K sizes
+[x] Implement CUDA fused_gelu_linear.cu with tiled GEMM
+[x] Implement Triton version with tl.dot + custom GeLU
+[x] Write correctness tests: multiple M/N/K sizes
 [ ] Benchmark: M=[128,512,2048], N=[768,3072], K=[768,3072]
 [ ] Profile with ncu — confirm fusion eliminates the extra HBM pass
 [ ] Commit results
-[ ] git tag v1.0.4
+[x] git tag v1.0.4
 ```
 
 ### Definition of Done
 - ✅ Correctness < 1e-3 (fp16) vs unfused PyTorch
-- ✅ Fused kernel measurably faster than unfused (goal: ≥1.3× on at least one config)
-- ✅ Nsight profile showing reduced HBM traffic vs unfused
+- ⬜ Fused kernel measurably faster than unfused (goal: >=1.3x on at least one config) (needs T4)
+- ⬜ Nsight profile showing reduced HBM traffic vs unfused (needs T4)
 - ✅ Tagged `v1.0.4`
 
 ---

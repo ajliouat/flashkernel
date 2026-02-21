@@ -342,3 +342,107 @@ MOD:  ROADMAP.md                             (v1.0.3 tasks marked complete)
 - v1.0.4: Fused GeLU+Linear (CUDA + Triton)
 
 ---
+
+## 2025-07-07 — v1.0.4: Fused GeLU+Linear
+
+### What was built
+
+**Goal:** Eliminate one HBM round-trip by fusing `GeLU(X @ W^T + bias)` into a single kernel. In the unfused case, PyTorch launches two kernels: one for the linear projection (writes intermediate to HBM) and one for GeLU (reads intermediate back from HBM). The fused kernel does matmul + bias + GeLU entirely in registers/shared memory and writes the final result to HBM once.
+
+**CUDA kernel** (`src/cuda/fused_gelu_linear.cu`, 230+ lines):
+- Tiled GEMM with TILE_M=64, TILE_N=64, TILE_K=32 (8 KB shared memory per tile pair)
+- Thread-block: 16x16 = 256 threads, each computing a 4x4 sub-tile
+- Cooperative loading: 256 threads load 64x32 = 2048 elements per tile (8 per thread)
+- Accumulation in fp32 registers for numerical stability
+- Bias addition in-register after matmul loop completes
+- GeLU applied in-register (no intermediate HBM write)
+- Template dispatch: `<UseTanhApprox, HasBias>` for 4 compile-time variants
+- Both GeLU implementations:
+  - Exact: `x * 0.5 * (1 + erf(x / sqrt(2)))` — uses CUDA `erff()`
+  - Tanh approx: `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` — uses `tanhf()`
+- Boundary handling: checks `row < M` and `col < N` for non-tile-aligned dimensions
+- Zero-padding in shared memory for partial K-tiles
+
+**Triton kernel** (`src/triton/fused_gelu_linear.py`, 210+ lines):
+- 8 autotune configs including CUDA-matching BLOCK_M=64, BLOCK_N=64, BLOCK_K=32
+- Stride-based addressing for general memory layouts
+- `tl.dot(x, tl.trans(w))` for matmul (Tensor Core dispatch on fp16)
+- GeLU via `tl.extra.cuda.libdevice.erf()` (exact) or `tl.extra.cuda.libdevice.tanh()` (approx)
+- Constexpr template flags: `HAS_BIAS`, `USE_TANH_APPROX`
+- Mask-based boundary handling for non-divisible dimensions
+
+**C++ binding** (`src/bindings/torch_ext.cpp`):
+- `fused_gelu_linear(X, W, bias, use_tanh_approx)` with `c10::optional<torch::Tensor>` for bias
+- Full input validation: CUDA device, fp16 dtype, 2-D shape, dimension compatibility, bias shape
+
+**Tests** (`tests/test_fused_gelu.py`, 350+ lines, 50+ test cases):
+- `TestFusedGeluLinearCUDAExact`: M=128/N=768/K=768, FFN up (512x3072x768), FFN down (2048x768x3072), single-token M=1, 5-config sweep
+- `TestFusedGeluLinearCUDATanh`: tanh approx correctness, 3-config sweep
+- `TestFusedGeluLinearNoBias`: exact and tanh without bias, 3-config sweep
+- `TestTritonFusedGeluLinear`: exact+bias, tanh+bias, no-bias, 4-config sweep, large batch M=4096
+- `TestFusedGeluLinearBoundary`: non-divisible dims [1, 7, 33, 100, 127, 65] for CUDA and Triton
+- `TestCUDAvsTritonFusedGelu`: cross-validation exact+bias, tanh+bias, no-bias, 3-config sweep
+- `TestGeluVariantComparison`: exact vs tanh max error bounds (CUDA and Triton)
+- `TestFusedGeluLinearOutputs`: shape, dtype, device, contiguous, finite, zero-input
+- `TestFusedGeluLinearDeterminism`: bit-exact reproducibility (CUDA exact, CUDA tanh, Triton)
+- `TestFusedGeluLinearErrors`: CPU tensor, fp32 input, shape mismatch, 3-D input, wrong bias size (both backends)
+
+**Benchmark** (`benchmarks/bench_fused_gelu.py`):
+- 4-way comparison: unfused PyTorch, torch.compile, CUDA fused, Triton fused
+- Dimension sweep: 10 configs from M=[128,512,2048] x N=[768,3072] x K=[768,3072]
+- GeLU variant comparison: exact vs tanh for both backends
+- Summary: reports best fusion speedup and whether >=1.3x target is met
+- CSV export to `benchmarks/results/fused_gelu.csv`
+
+### Design decisions
+
+1. **Tiled GEMM (not wmma/mma)** — ROADMAP suggested wmma (Tensor Cores), but SM 7.5 wmma requires specific matrix fragment sizes (16x16x16) that complicate the fusion with GeLU. Using a scalar tiled GEMM with 4x4 thread-tiles gives more flexibility for the in-register GeLU fusion while still being a genuine shared-memory tiled implementation. The Triton kernel uses `tl.dot` which auto-dispatches to Tensor Cores.
+
+2. **Template dispatch for bias/GeLU** — Four compile-time variants avoid runtime branches in the inner loop: `<true,true>`, `<true,false>`, `<false,true>`, `<false,false>`. This is the same pattern as flash_attention.cu which templates on tile sizes.
+
+3. **fp32 accumulation + GeLU** — Matmul accumulates in fp32, bias addition and GeLU computed in fp32, final result cast to fp16 on store. This matches PyTorch's internal precision for F.gelu().
+
+4. **`c10::optional<torch::Tensor>` for bias** — Cleaner Python API than passing a dummy tensor. Default is `c10::nullopt` which maps to `None` in Python.
+
+5. **Autotune key = (M, N, K)** — Triton autotuning keyed on all three dimensions since optimal tile sizes depend on the matmul shape, unlike attention where only (N, D) matter.
+
+6. **libdevice for transcendentals** — Triton has no native erf/tanh, so we use `tl.extra.cuda.libdevice.erf()` and `.tanh()`. These compile to efficient PTX instructions.
+
+### Fusion: why it matters
+
+```
+Unfused (PyTorch default):
+  kernel 1: linear(X, W, b)  -->  HBM write temp [M, N] fp16
+  kernel 2: gelu(temp)        -->  HBM read temp, HBM write Y
+  Total HBM traffic: 3 * M * N * 2 bytes (write + read + write)
+
+Fused (FlashKernel v1.0.4):
+  kernel 1: fused_gelu_linear(X, W, b)  -->  HBM write Y only
+  Total HBM traffic: 1 * M * N * 2 bytes (write only)
+
+Saving: 2 * M * N * 2 bytes of HBM bandwidth per call
+For M=2048, N=3072: saving = 2 * 2048 * 3072 * 2 = 25.2 MB per call
+```
+
+### Files added/modified
+```
+NEW:  src/cuda/fused_gelu_linear.cu          (230+ lines -- CUDA tiled GEMM + GeLU)
+NEW:  src/cuda/fused_gelu_linear.cuh         (header declaring fused_gelu_linear)
+NEW:  src/triton/fused_gelu_linear.py        (210+ lines -- Triton fused kernel)
+NEW:  tests/test_fused_gelu.py               (350+ lines, 50+ tests, 11 classes)
+NEW:  benchmarks/bench_fused_gelu.py         (4-way benchmark with fusion speedup)
+MOD:  src/bindings/torch_ext.cpp             (v1.0.4, fused_gelu_linear binding)
+MOD:  flashkernel/__init__.py                (v1.0.4, expose fused_gelu_linear + triton)
+MOD:  pyproject.toml                         (version 1.0.4)
+MOD:  setup.py                               (version 1.0.4)
+MOD:  benchmarks/run_all.sh                  (added bench_fused_gelu.py)
+MOD:  ROADMAP.md                             (v1.0.4 tasks marked)
+```
+
+### Next steps
+- Run benchmark on T4: confirm >=1.3x speedup from fusion
+- Profile with ncu: visualize HBM traffic reduction
+- Commit benchmark results CSV
+- v1.0.5: RoPE Embedding (CUDA + Triton)
+
+---

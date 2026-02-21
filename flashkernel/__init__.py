@@ -7,7 +7,7 @@ Build from source:
 Requires CUDA toolkit and PyTorch with CUDA support.
 """
 
-__version__ = "1.0.3"
+__version__ = "1.0.4"
 
 
 def _load_extension():
@@ -27,8 +27,11 @@ def _load_extension():
       v1.0.3:
         - triton_flash_attention_forward(Q, K, V, scale, is_causal) -> (O, L)
 
+      v1.0.4:
+        - fused_gelu_linear(X, W, bias, use_tanh_approx) -> Y
+        - triton_fused_gelu_linear(X, W, bias, use_tanh_approx) -> Y
+
     Future versions will add:
-      - fused_gelu_linear (v1.0.4)
       - rope_forward (v1.0.5)
       - paged_kv_cache_append / _read (v1.0.6)
     """
@@ -37,6 +40,7 @@ def _load_extension():
             vector_add, device_info,
             reduce_sum, reduce_max,
             flash_attention_forward as _flash_attn_fwd,
+            fused_gelu_linear as _fused_gelu_linear_c,
         )
         return {
             "vector_add": vector_add,
@@ -44,6 +48,7 @@ def _load_extension():
             "reduce_sum": reduce_sum,
             "reduce_max": reduce_max,
             "flash_attention_forward": _flash_attn_fwd,
+            "fused_gelu_linear": _fused_gelu_linear_c,
         }
     except ImportError:
         return None
@@ -57,12 +62,14 @@ if _ext is not None:
     reduce_sum = _ext["reduce_sum"]
     reduce_max = _ext["reduce_max"]
     _flash_attention_forward_c = _ext["flash_attention_forward"]
+    _fused_gelu_linear_c = _ext["fused_gelu_linear"]
 else:
     vector_add = None
     device_info = None
     reduce_sum = None
     reduce_max = None
     _flash_attention_forward_c = None
+    _fused_gelu_linear_c = None
 
 
 def _not_compiled(*args, **kwargs):
@@ -158,3 +165,49 @@ def triton_flash_attention_forward(Q, K, V, scale=None, is_causal=False):
     except ImportError:
         from flashkernel._triton.flash_attention import triton_flash_attention_forward as _tfn
     return _tfn(Q, K, V, scale=scale, is_causal=is_causal)
+
+
+# ─── v1.0.4: Fused GeLU+Linear ─────────────────────────────────────────────
+
+def fused_gelu_linear(X, W, bias=None, use_tanh_approx=False):
+    """
+    Fused GeLU+Linear: Y = GeLU(X @ W^T + bias)  — CUDA kernel.
+
+    Eliminates one HBM round-trip by fusing matmul + bias + GeLU into
+    a single kernel. The intermediate linear output is never written to HBM.
+
+    Args:
+        X: [M, K] fp16 CUDA tensor — input activations
+        W: [N, K] fp16 CUDA tensor — weight matrix
+        bias: [N] fp16 CUDA tensor or None — optional bias
+        use_tanh_approx: If True, use fast tanh GeLU; else exact erf GeLU.
+
+    Returns:
+        Y: [M, N] fp16 — GeLU(X @ W^T + bias)
+    """
+    if _fused_gelu_linear_c is None:
+        _not_compiled()
+    return _fused_gelu_linear_c(X, W, bias, use_tanh_approx)
+
+
+def triton_fused_gelu_linear(X, W, bias=None, use_tanh_approx=False):
+    """
+    Fused GeLU+Linear: Y = GeLU(X @ W^T + bias)  — Triton kernel.
+
+    Same fusion as the CUDA kernel, but implemented in Triton with
+    autotune over tile sizes.
+
+    Args:
+        X: [M, K] fp16 CUDA tensor — input activations
+        W: [N, K] fp16 CUDA tensor — weight matrix
+        bias: [N] fp16 CUDA tensor or None — optional bias
+        use_tanh_approx: If True, use fast tanh GeLU; else exact erf GeLU.
+
+    Returns:
+        Y: [M, N] fp16 — GeLU(X @ W^T + bias)
+    """
+    try:
+        from src.triton.fused_gelu_linear import triton_fused_gelu_linear as _tfgl
+    except ImportError:
+        from flashkernel._triton.fused_gelu_linear import triton_fused_gelu_linear as _tfgl
+    return _tfgl(X, W, bias=bias, use_tanh_approx=use_tanh_approx)

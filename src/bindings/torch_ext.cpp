@@ -12,6 +12,7 @@
 #include "stub.cuh"
 #include "reduce.cuh"
 #include "flash_attention.cuh"
+#include "fused_gelu_linear.cuh"
 
 namespace py = pybind11;
 
@@ -211,6 +212,58 @@ std::vector<torch::Tensor> flash_attention_forward(
 
 // ─── Device Info ────────────────────────────────────────────────────────────
 
+// ─── v1.0.4: Fused GeLU+Linear wrapper ─────────────────────────────────────
+
+torch::Tensor fused_gelu_linear(
+    torch::Tensor X,
+    torch::Tensor W,
+    c10::optional<torch::Tensor> bias,
+    bool use_tanh_approx
+) {
+    TORCH_CHECK(X.device().is_cuda(), "X must be on CUDA device");
+    TORCH_CHECK(W.device().is_cuda(), "W must be on CUDA device");
+    TORCH_CHECK(X.is_contiguous(), "X must be contiguous");
+    TORCH_CHECK(W.is_contiguous(), "W must be contiguous");
+    TORCH_CHECK(X.scalar_type() == torch::kFloat16, "X must be float16");
+    TORCH_CHECK(W.scalar_type() == torch::kFloat16, "W must be float16");
+    TORCH_CHECK(X.dim() == 2, "X must be 2-D [M, K]");
+    TORCH_CHECK(W.dim() == 2, "W must be 2-D [N, K]");
+    TORCH_CHECK(X.size(1) == W.size(1),
+                "X columns (", X.size(1), ") must match W columns (", W.size(1), ")");
+
+    int M = X.size(0);
+    int K = X.size(1);
+    int N = W.size(0);
+
+    const half* bias_ptr = nullptr;
+    if (bias.has_value()) {
+        auto& b = bias.value();
+        TORCH_CHECK(b.device().is_cuda(), "bias must be on CUDA device");
+        TORCH_CHECK(b.is_contiguous(), "bias must be contiguous");
+        TORCH_CHECK(b.scalar_type() == torch::kFloat16, "bias must be float16");
+        TORCH_CHECK(b.dim() == 1 && b.size(0) == N,
+                    "bias must be 1-D of size N=", N, ", got shape [", b.size(0), "]");
+        bias_ptr = reinterpret_cast<const half*>(b.data_ptr<at::Half>());
+    }
+
+    auto Y = torch::empty({M, N}, X.options());  // [M, N] fp16
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+
+    flashkernel::fused_gelu_linear(
+        reinterpret_cast<const half*>(X.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(W.data_ptr<at::Half>()),
+        bias_ptr,
+        reinterpret_cast<half*>(Y.data_ptr<at::Half>()),
+        M, N, K,
+        use_tanh_approx,
+        stream
+    );
+
+    return Y;
+}
+
+// ─── Device Info ────────────────────────────────────────────────────────────
+
 py::dict device_info(int device_id = 0) {
     auto info = flashkernel::get_device_info(device_id);
     py::dict d;
@@ -262,12 +315,21 @@ PYBIND11_MODULE(_flashkernel_C, m) {
           py::arg("scale") = -1.0f,
           py::arg("is_causal") = false);
 
+    // v1.0.4: Fused GeLU+Linear
+    m.def("fused_gelu_linear", &fused_gelu_linear,
+          "Fused linear projection + GeLU activation.\n"
+          "Computes Y = GeLU(X @ W^T + bias) in a single kernel,\n"
+          "eliminating one HBM round-trip vs unfused.\n"
+          "Supports exact (erf) and tanh GeLU approximation.",
+          py::arg("X"), py::arg("W"),
+          py::arg("bias") = c10::nullopt,
+          py::arg("use_tanh_approx") = false);
+
     // Version info
-    m.attr("__version__") = "1.0.3";
+    m.attr("__version__") = "1.0.4";
 
     // Future kernel bindings:
     // v1.0.3: (Triton — pure Python, no C++ binding needed)
-    // v1.0.4: m.def("fused_gelu_linear", ...)
     // v1.0.5: m.def("rope_forward", ...)
     // v1.0.6: m.def("paged_kv_cache_append", ...) m.def("paged_kv_cache_read", ...)
 }

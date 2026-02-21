@@ -1,0 +1,51 @@
+# ─── Build artifacts ─────────────────────────────────────────────────────────
+build/
+dist/
+*.egg-info/
+*.egg
+*.so
+*.o
+*.a
+*.dylib
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.pyo
+.eggs/
+*.whl
+
+# ─── CUDA ────────────────────────────────────────────────────────────────────
+*.cubin
+*.ptx
+*.fatbin
+
+# ─── IDE / Editor ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ─── Virtual environments ───────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.conda/
+
+# ─── Docker ──────────────────────────────────────────────────────────────────
+.dockerignore
+
+# ─── Jupyter ─────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ─── profiling (keep committed .ncu-rep files, ignore temp) ──────────────────
+profiling/tmp/
+
+# ─── DO commit these (benchmarks and profiles are artifacts) ─────────────────
+# !benchmarks/results/*.csv
+# !profiling/*.ncu-rep
+# !profiling/roofline/*.svg

@@ -485,15 +485,15 @@ output = model.generate(input_ids, max_new_tokens=128)
 ### Tasks
 
 ```
-[ ] Write monkey-patch module for GPT-2 attention
-[ ] Write monkey-patch for MLP (fused GeLU+Linear)
-[ ] Add RoPE if using a model that needs it (GPT-2 uses absolute pos — skip RoPE here)
-[ ] Add KV-cache integration for autoregressive generation
-[ ] Benchmark: prompt lengths [32, 128, 512], generate 128 tokens
-[ ] Compare 4 backends
-[ ] Verify generation quality: same output text as HF default (greedy decoding)
-[ ] Commit results
-[ ] git tag v1.0.7
+[x] Write monkey-patch module for GPT-2 attention
+[x] Write monkey-patch for MLP (fused GeLU+Linear)
+[x] Add RoPE if using a model that needs it (GPT-2 uses absolute pos — skip RoPE here)
+[x] Add KV-cache integration for autoregressive generation
+[x] Benchmark: prompt lengths [32, 128, 512], generate 128 tokens
+[x] Compare 4 backends
+[x] Verify generation quality: same output text as HF default (greedy decoding)
+[x] Commit results
+[x] git tag v1.0.7
 ```
 
 ### Definition of Done

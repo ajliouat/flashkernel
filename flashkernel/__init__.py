@@ -7,7 +7,7 @@ Build from source:
 Requires CUDA toolkit and PyTorch with CUDA support.
 """
 
-__version__ = "1.0.6"
+__version__ = "1.0.7"
 
 
 def _load_extension():
@@ -45,8 +45,12 @@ def _load_extension():
         - triton_paged_kv_cache_read(...) -> (K, V)
         - PagedKVCache class — high-level wrapper with page management
 
+      v1.0.7 (integration — no new C kernels):
+        - GPT-2 end-to-end integration via monkey-patching
+        - src.integration.gpt2_custom_kernels module
+
     Future versions will add:
-      - GPT-2 end-to-end integration (v1.0.7)
+      - Custom multi-head attention layer (v1.0.8)
     """
     try:
         from flashkernel._flashkernel_C import (

@@ -5,7 +5,7 @@
 
 ---
 
-## Status: v1.0.6 COMPLETE — Paged KV-Cache
+## Status: v1.0.7 COMPLETE — GPT-2 End-to-End Integration
 
 ### Pre-Development Research (Week 0)
 - [ ] Read FlashAttention paper + blog post
@@ -632,5 +632,98 @@ MOD:  ROADMAP.md                       (v1.0.6 tasks marked)
 ### Next steps
 - Run benchmarks on T4 to quantify actual memory savings and gather latency
 - v1.0.7: GPT-2 End-to-End Integration
+
+---
+
+## 2025-06-28 — v1.0.7: GPT-2 End-to-End Integration
+
+### What was built
+- **Monkey-patch module:** `src/integration/gpt2_custom_kernels.py` — replaces GPT-2's attention and MLP with FlashKernel custom CUDA/Triton kernels via runtime monkey-patching.
+- **Attention patch:** Intercepts after Q/K/V projection, reshapes to `[B, H, N, D]` fp16, calls `flash_attention_forward()` (tiled, online softmax, no N×N materialization), reshapes back and applies output projection. Handles KV-cache `layer_past` for autoregressive generation.
+- **MLP patch:** Replaces `c_fc → GeLU` with `fused_gelu_linear()` (single HBM round-trip). Conv1D weight `[in, out]` is transposed to `[N, K]` for kernel compatibility. Output projection `c_proj` kept as-is.
+- **Patch/unpatch API:** `patch_gpt2_model(model, backend, patch_attention, patch_mlp)` and `unpatch_gpt2_model(model)`. Stores original forwards in a registry keyed by `id(module)`. Supports selective patching (attention-only, MLP-only, or both).
+- **Backend selection:** `backend='cuda'` or `backend='triton'` — dispatches to the appropriate FlashKernel implementation.
+
+### Design rationale
+```
+Monkey-patching vs subclassing:
+  - Monkey-patching lets us swap individual components without rewriting
+    the entire GPT-2 forward pass or generation pipeline
+  - HuggingFace's generate() calls model.forward() which calls each
+    block's attn.forward() and mlp.forward() — our patches intercept
+    exactly at these points
+  - Unpatch restores original behavior (no model reload needed)
+
+Conv1D weight handling:
+  - HF Conv1D stores weights as [in_features, out_features]
+  - Conv1D.forward: x @ weight + bias (no transpose)
+  - Our fused_gelu_linear expects W [N, K] and computes X @ W^T + bias
+  - For c_fc weight [768, 3072]: pass weight.T → [3072, 768] = [N, K] ✓
+  - fused_gelu_linear computes: GeLU(X @ [3072,768]^T + bias) = GeLU(X @ [768,3072] + bias)
+  - This matches c_fc's Conv1D: x @ weight + bias ✓
+
+GPT-2 architecture notes:
+  - 12 layers, 12 heads, head_dim=64, hidden=768
+  - Absolute positional embeddings (not RoPE — skip rope integration)
+  - GeLU uses tanh approximation (use_tanh_approx=True in our kernel)
+  - KV-cache via layer_past=(past_key, past_value), concatenated in attn
+```
+
+### Test summary
+```
+test_gpt2_integration.py — 4 test classes:
+  TestPatchingMechanics (5 tests)
+    - patch_attention_only: verifies 12 attention layers patched, 0 MLP
+    - patch_mlp_only: verifies 0 attention, 12 MLP layers patched
+    - patch_full_model: verifies 12+12 patched
+    - double_patch_idempotent: no breakage on double-patch
+    - get_config_info: architecture metadata extraction
+
+  TestGreedyIdentity (4 tests)
+    - greedy_short_prompt: "The quick brown fox" → identical tokens
+    - greedy_medium_prompt: ~128 token prompt → identical tokens
+    - attention_only_preserves_output: attention-only patch → identical
+    - mlp_only_preserves_output: MLP-only patch → identical
+
+  TestForwardPass (3 tests)
+    - single_token_input: [1,1] → no NaN/Inf
+    - batch_input: [4,16] → correct shape, no NaN
+    - long_sequence: [1,512] → correct shape, no NaN
+
+  TestGenerationQuality (2 tests)
+    - generates_coherent_text: output longer than prompt, mostly alpha
+    - deterministic_generation: two greedy runs → identical output
+```
+
+### Benchmark suite
+```
+bench_e2e_gpt2.py — end-to-end generation benchmark:
+  - Model: GPT-2-124M (fp16 on CUDA)
+  - Prompt lengths: [32, 128, 512] tokens
+  - Generate: 128 tokens per prompt
+  - Backends: HF default, torch.compile, FlashKernel (CUDA)
+  - Metrics: tokens/sec, latency (ms), peak GPU memory (MB)
+  - Verification: greedy decoding identity check before benchmarking
+  - Output: benchmarks/results/e2e_gpt2.csv + formatted comparison table
+```
+
+### Files added/modified
+```
+NEW:  src/integration/__init__.py               (package init)
+NEW:  src/integration/gpt2_custom_kernels.py    (250+ lines — monkey-patch module)
+NEW:  tests/test_gpt2_integration.py            (250+ lines, 14 tests, 4 classes)
+NEW:  benchmarks/bench_e2e_gpt2.py              (280+ lines — E2E benchmark)
+MOD:  flashkernel/__init__.py                   (v1.0.7, updated docstring)
+MOD:  pyproject.toml                            (v1.0.7, added integration optional dep)
+MOD:  setup.py                                  (v1.0.7)
+MOD:  src/bindings/torch_ext.cpp                (v1.0.7)
+MOD:  benchmarks/run_all.sh                     (added bench_e2e_gpt2.py)
+MOD:  ROADMAP.md                                (v1.0.7 tasks marked)
+```
+
+### Next steps
+- Run E2E benchmark on T4 to get real tokens/sec numbers
+- Fill in comparison matrix in ROADMAP.md with actual results
+- v1.0.8: Roofline Analysis
 
 ---

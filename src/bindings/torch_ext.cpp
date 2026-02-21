@@ -585,8 +585,8 @@ PYBIND11_MODULE(_flashkernel_C, m) {
           py::arg("seq_lens"), py::arg("max_seq_len"));
 
     // Version info
-    m.attr("__version__") = "1.0.6";
+    m.attr("__version__") = "1.0.7";
 
     // Future kernel bindings:
-    // v1.0.7: GPT-2 end-to-end integration
+    // v1.0.8: custom multi-head attention layer
 }

@@ -53,6 +53,10 @@ python benchmarks/bench_rope.py
 echo "Running paged KV-cache benchmark..."
 python benchmarks/bench_kv_cache.py
 
+# v1.0.7: GPT-2 End-to-End benchmark
+echo "Running GPT-2 end-to-end benchmark..."
+python benchmarks/bench_e2e_gpt2.py
+
 echo ""
 echo "════════════════════════════════════════════════════════════"
 echo "  All benchmarks complete. Results in benchmarks/results/"

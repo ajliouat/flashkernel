@@ -70,7 +70,7 @@ ext_modules = [
 
 setup(
     name="flashkernel",
-    version="1.0.6",
+    version="1.0.7",
     packages=find_packages(),
     ext_modules=ext_modules,
     cmdclass={"build_ext": BuildExtension},

@@ -430,7 +430,7 @@ Paged:      batch × actual_seq_len × 2 × num_heads × head_dim × sizeof(fp16
 [x] Benchmark memory: report savings at seq=1024,2048,4096 vs contiguous
 [x] Benchmark latency: gather vs contiguous read
 [x] Commit results
-[ ] git tag v1.0.6
+[x] git tag v1.0.6
 ```
 
 ### Definition of Done

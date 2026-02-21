@@ -29,9 +29,9 @@ mkdir -p benchmarks/results
 echo "▸ Running stub benchmark (vector_add)..."
 python benchmarks/bench_stub.py
 
-# v1.0.1: Reduction benchmark (will be added)
-# echo "▸ Running reduction benchmark..."
-# python benchmarks/bench_reduce.py
+# v1.0.1: Reduction benchmark
+echo "▸ Running reduction benchmark (sum, max, row-wise)..."
+python benchmarks/bench_reduce.py
 
 # v1.0.2: Attention benchmark (will be added)
 # echo "▸ Running attention benchmark..."

@@ -31,10 +31,10 @@ jobs:
         run: pip install ruff mypy
 
       - name: Ruff check
-        run: ruff check flashkernel/ benchmarks/ tests/ --select E,W,F,I
+        run: ruff check flashkernel/ benchmarks/ tests/ src/triton/ --select E,W,F,I --ignore E402
 
       - name: Ruff format check
-        run: ruff format --check flashkernel/ benchmarks/ tests/
+        run: ruff format --check flashkernel/ benchmarks/ tests/ src/triton/
 
   # ─── Docker Build (validates CUDA compilation) ──────────────────────────
   docker-build:

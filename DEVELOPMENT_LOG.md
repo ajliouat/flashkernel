@@ -59,3 +59,80 @@ src/triton/.gitkeep          src/integration/.gitkeep
 - v1.0.1: Parallel reduction kernel (warp shuffle `__shfl_down_sync` + shared memory tree reduction)
 
 ---
+
+## 2025-02-21 — v1.0.1: Parallel Reduction Kernels
+
+### What was built
+
+**CUDA kernels** (`src/cuda/reduce.cu`, 420+ lines):
+- **Warp-level reduction** via `__shfl_down_sync(0xffffffff, val, offset)` — unrolled 5-step shuffle for 32-thread warps
+- **Block-level reduction** via shared memory: each warp writes its partial to `__shared__ float[32]`, first warp reduces those
+- **Two-pass grid reduction** for full array sum/max:
+  - Pass 1: grid-stride loop, each block produces one partial (capped at 1024 blocks)
+  - Pass 2: single block reduces partials → scalar
+  - No atomics: completely deterministic
+- **Row-wise reduction** (one block per row, grid-stride within cols)
+- **All variants**: `reduce_sum_f32`, `reduce_sum_f16`, `reduce_max_f32`, `reduce_max_f16`, `reduce_sum_rows_f32`, `reduce_sum_rows_f16`
+- **fp16 stability**: all fp16 paths promote to fp32 for accumulation, cast back at output
+
+**pybind11 bindings** (`torch_ext.cpp`):
+- `reduce_sum(input, dim=-1)` — full reduction or dim-specified (auto-permutes non-last dims)
+- `reduce_max(input)` — full max reduction
+- Both dispatch fp32/fp16, validate CUDA + contiguous
+
+**Triton equivalents** (`src/triton/reduce.py`):
+- `triton_reduce_sum`, `triton_reduce_max`, `triton_reduce_sum_rows`
+- Two-pass approach matching CUDA: program-per-chunk → finalize
+- Row-wise kernel: one program per row with `tl.sum`
+
+**Tests** (`tests/test_reduce.py`, 270+ lines, 50+ test cases):
+- `TestReduceSumF32` — 6 sizes (1 to 1M), zeros, ones, negatives
+- `TestReduceSumF16` — 5 sizes with wider tolerance
+- `TestReduceSumRoadmapShapes` — exact shapes from ROADMAP.md test matrix
+- `TestReduceMaxF32` / `TestReduceMaxF16` — parametric + known-max test
+- `TestReduceSumRows` — 2D/3D, first/last dim, fp16
+- `TestReduceEdgeCases` — CPU raises, non-contiguous raises, single-element
+- `TestTritonReduceSum / Max / Rows` — Triton correctness
+- `TestCrossValidation` — CUDA vs Triton agree on same inputs
+
+**Benchmark** (`benchmarks/bench_reduce.py`):
+- Full sum sweep: 1K → 100M elements, 3-way (PyTorch vs CUDA vs Triton)
+- Full max sweep: 1K → 10M, 3-way
+- Row-wise sweep: 5 shapes (128×4096 → 8192×512)
+- Computes effective bandwidth (GB/s) for each measurement
+- CSV export to `benchmarks/results/reduce.csv`
+
+### Design decisions
+1. **Two-pass over atomics** — atomic add is non-deterministic across runs. Two-pass with intermediate buffer gives bit-exact results across launches.
+2. **Grid-stride loop** — each thread processes multiple elements before the block reduce, maximizing occupancy for large arrays.
+3. **Block size = 256 (8 warps)** — sweet spot for T4: 4 blocks per SM at full occupancy, fits shared memory budget.
+4. **fp16 accumulation in fp32** — half-precision accumulation overflows for n > ~2K. Always promote, cast back at finalize.
+5. **Row-wise = one block per row** — simple mapping, good for cols ≤ blockDim.x. Falls back to grid-stride for large cols.
+6. **`dim` argument with auto-permute** — non-last-dim reduces permute the tensor to put target dim last, then call the row-wise kernel. Matches PyTorch API.
+
+### What worked
+- Warp shuffle is elegant: 5 lines replace what would be 5 `__syncthreads()` barriers with shared memory
+- Block-level shared memory reduction is clean: `shared[32]` is tiny, no bank conflicts
+- Triton implementation was ~3x less code than CUDA for equivalent functionality
+
+### Files added/modified
+```
+NEW:  src/cuda/reduce.cu          (420 lines — kernels + host wrappers)
+NEW:  src/cuda/reduce.cuh         (header with API declarations)
+NEW:  src/triton/reduce.py        (Triton equivalents)
+NEW:  tests/test_reduce.py        (50+ test cases)
+NEW:  benchmarks/bench_reduce.py  (3-way comparison benchmark)
+MOD:  src/bindings/torch_ext.cpp  (added reduce_sum, reduce_max bindings)
+MOD:  flashkernel/__init__.py     (expose reduce_sum, reduce_max, triton variants)
+MOD:  pyproject.toml              (version → 1.0.1)
+MOD:  setup.py                    (version → 1.0.1)
+MOD:  benchmarks/run_all.sh       (added bench_reduce.py)
+MOD:  .github/workflows/ci.yml    (lint src/triton/)
+DEL:  src/triton/.gitkeep         (replaced by reduce.py)
+```
+
+### Next steps
+- Run full benchmark suite + Nsight Compute profiling on T4 instance
+- v1.0.2: Tiled FlashAttention forward (CUDA C++) — the core kernel
+
+---

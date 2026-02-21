@@ -110,23 +110,29 @@ Cross-warp (shared memory):
 ### Tasks
 
 ```
-[ ] Implement warp shuffle reduction in reduce.cu
-[ ] Add shared memory tree reduction for blocks > 32 threads
-[ ] Support fp16 and fp32
-[ ] Write pybind11 binding
-[ ] Write Triton reduce kernel
-[ ] Write test_reduce.py with the 4 shapes above
-[ ] Run benchmarks: 1M / 10M / 100M elements
+[x] Implement warp shuffle reduction in reduce.cu (__shfl_down_sync)
+[x] Add shared memory tree reduction for blocks > 32 threads (block_reduce_sum/max)
+[x] Support fp16 and fp32 (fp16 accumulates in fp32 internally)
+[x] Two-pass grid reduction (partials buffer, no atomics, deterministic)
+[x] Row-wise reduction kernel (one block per row, grid-stride within row)
+[x] Max reduction (full + finalize kernels)
+[x] Write pybind11 binding (reduce_sum with dim arg, reduce_max)
+[x] Write Triton reduce kernel (sum, max, sum_rows)
+[x] Write test_reduce.py — roadmap shapes + edge cases + cross-validation
+[x] Write bench_reduce.py — 1K→100M sweep, 3-way comparison
+[ ] Run benchmarks on T4: 1M / 10M / 100M elements
 [ ] Run ncu on reduce kernel, save .ncu-rep
 [ ] Commit benchmark CSV + Nsight profile
-[ ] Update DEVELOPMENT_LOG.md
-[ ] git tag v1.0.1
+[x] Update DEVELOPMENT_LOG.md
+[x] git tag v1.0.1
 ```
+
+**Code complete:** 2025-02-21 — awaiting GPU benchmarks on T4
 
 ### Definition of Done
 - ✅ Correctness: max absolute error < 1e-5 (fp32) / < 1e-2 (fp16)
-- ✅ Benchmark CSV committed with real numbers
-- ✅ Nsight profile `.ncu-rep` committed
+- ⬜ Benchmark CSV committed with real numbers (needs T4)
+- ⬜ Nsight profile `.ncu-rep` committed (needs T4)
 - ✅ CI green
 - ✅ Tagged `v1.0.1`
 

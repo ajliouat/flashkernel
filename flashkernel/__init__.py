@@ -7,7 +7,7 @@ Build from source:
 Requires CUDA toolkit and PyTorch with CUDA support.
 """
 
-__version__ = "1.0.8"
+__version__ = "1.0.9"
 
 
 def _load_extension():
@@ -54,8 +54,10 @@ def _load_extension():
         - profiling/roofline/generate_roofline.py
         - profiling/scripts/profile_all.sh
 
-    Future versions will add:
-      - Polish & ship (v1.0.9)
+      v1.0.9 (polish & ship — no new kernels):
+        - README with real roofline numbers
+        - Blog post published
+        - Project page updated with benchmarks
     """
     try:
         from flashkernel._flashkernel_C import (

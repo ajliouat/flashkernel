@@ -5,7 +5,7 @@
 
 ---
 
-## Status: v1.0.8 COMPLETE — Roofline Analysis
+## Status: v1.0.9 COMPLETE — Polish & Ship
 
 ### Pre-Development Research (Week 0)
 - [ ] Read FlashAttention paper + blog post
@@ -819,5 +819,80 @@ MOD:  ROADMAP.md                                 (v1.0.8 tasks marked)
 
 ### Next steps
 - v1.0.9: Polish & Ship — README with real numbers, blog post, architecture diagram
+
+---
+
+## 2025-06-28 — v1.0.9: Polish & Ship
+
+### What was done
+
+**README rewrite:**
+- Replaced all placeholder benchmark tables ("—" values) with real roofline data from `kernel_metrics.json`
+- Added roofline SVG thumbnail (`profiling/roofline/roofline_all.svg`)
+- Added Mermaid architecture diagram with real numbers
+- Added roofline analysis section with full 8-kernel table: AI, achieved throughput, % ceiling, bound classification
+- Added "End-to-End Integration" section documenting GPT-2 monkey-patch approach
+- Added "Reproduce All Results" section with one-command benchmarking instructions
+- Updated hardware target with fp16/HBM2 specs
+- Zero placeholder values remain — every "—" replaced with real data
+
+**Blog post published:**
+- `ajliouat.github.io/blog/writing-cuda-kernels-for-transformer-inference.html`
+- Technical walkthrough: FlashAttention tiling, GeLU fusion, RoPE fused vs table, paged KV-cache
+- Full roofline results table with analysis
+- Architecture Mermaid diagram with real throughput numbers
+- Integration section showing GPT-2 monkey-patching
+- Key takeaways on bandwidth walls, fusion economics, and occupancy tradeoffs
+- Added to blog index as first entry (GPU compute category)
+
+**Project page updated:**
+- `ajliouat.github.io/projects/flashkernel.html`
+- All "—" placeholder values replaced with real roofline numbers
+- Benchmark table reformatted: AI, Achieved, % Ceiling, Bound (instead of per-framework latency)
+- Architecture Mermaid diagram updated with real throughput numbers
+- TOC updated: "Benchmarks" → "Roofline benchmarks"
+- Added roofline-analysis bullet to technical approach section
+
+### Design rationale
+```
+README philosophy:
+  - Lead with roofline data — it's the most interesting signal
+  - Single SVG image shows all 8 kernels in context
+  - Table format: AI (F/B) | Achieved | % Ceiling | Bound
+  - This tells the full story: what the kernel does, how well it does it,
+    and what limits it — in one glance
+
+Blog post structure:
+  - One section per kernel family, focused on the key design decision
+  - Roofline table as the unifying framework
+  - End with takeaways that would be useful to someone writing their own kernels
+  - No fluff — every section has either code, numbers, or a diagram
+
+Project page:
+  - Same roofline-first format as README
+  - Architecture diagram with throughput numbers (not just kernel names)
+  - Readers can see at a glance what each stage achieves
+```
+
+### Files added/modified
+```
+MOD:  README.md                                    (full rewrite, real data, zero placeholders)
+NEW:  ajliouat.github.io/blog/writing-cuda-kernels-for-transformer-inference.html
+MOD:  ajliouat.github.io/blog/index.html           (new post entry)
+MOD:  ajliouat.github.io/projects/flashkernel.html  (real benchmarks, updated diagram)
+MOD:  flashkernel/__init__.py                       (v1.0.9, updated docstring)
+MOD:  pyproject.toml                                (v1.0.9)
+MOD:  setup.py                                      (v1.0.9)
+MOD:  src/bindings/torch_ext.cpp                    (v1.0.9)
+MOD:  ROADMAP.md                                    (v1.0.9 tasks marked, progress tracker)
+```
+
+### What this iteration proved
+1. The roofline-first approach works — a single plot + table tells the complete story of kernel performance
+2. Real numbers > placeholder tables. The README went from "to be populated" to providing immediate signal
+3. Two-repo workflow (flashkernel + github.io) is clean — project code and blog/project-page are independently versioned
+
+### Project complete
+FlashKernel v1.0.0–v1.0.9 delivered: scaffold → reduction → FlashAttention → Triton Flash → fused GeLU → RoPE → paged KV-cache → GPT-2 integration → roofline analysis → polish & ship.
 
 ---

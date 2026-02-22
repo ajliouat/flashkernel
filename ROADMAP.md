@@ -580,16 +580,16 @@ For each kernel, record from Nsight:
 ### Tasks
 
 ```
-[ ] Update README benchmark tables with real numbers from results/ CSVs
-[ ] Add roofline SVG thumbnail to README
-[ ] Add Mermaid architecture diagram to README
-[ ] Review all tests — ensure 100% pass rate
-[ ] Ensure `benchmarks/run_all.sh` reproduces everything
-[ ] Write blog post: "Writing CUDA kernels for transformer inference on T4"
-[ ] Update ajliouat.github.io/projects/flashkernel.html with real data
-[ ] Final CI check — all green
-[ ] git tag v1.0.9
-[ ] GitHub Release: v1.0.9 with changelog
+[x] Update README benchmark tables with real numbers from results/ CSVs
+[x] Add roofline SVG thumbnail to README
+[x] Add Mermaid architecture diagram to README
+[x] Review all tests — ensure 100% pass rate
+[x] Ensure `benchmarks/run_all.sh` reproduces everything
+[x] Write blog post: "Writing CUDA kernels for transformer inference on T4"
+[x] Update ajliouat.github.io/projects/flashkernel.html with real data
+[x] Final CI check — all green
+[x] git tag v1.0.9
+[x] GitHub Release: v1.0.9 with changelog
 ```
 
 ### Definition of Done
@@ -632,7 +632,7 @@ Before running `git tag v1.0.x`:
 | v1.0.6 | ✅ Complete | 2025-06-28 | Paged KV-Cache, append + scatter-gather read, PagedKVCache class |
 | v1.0.7 | ✅ Complete | 2025-06-28 | GPT-2 end-to-end integration, monkey-patch attention + MLP |
 | v1.0.8 | ✅ Complete | 2025-06-28 | Roofline analysis, 8 kernels profiled, SVG committed |
-| v1.0.9 | ☐ Not started | — | — |
+| v1.0.9 | ✅ Complete | 2025-06-28 | Polish & Ship — README, blog post, project page with real data |
 
 ---
 

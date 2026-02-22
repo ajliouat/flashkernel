@@ -1,3 +1,6 @@
+# ─── Private strategy docs (never commit) ───────────────────────────────────
+.private/
+
 # ─── Build artifacts ─────────────────────────────────────────────────────────
 build/
 dist/

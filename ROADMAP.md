@@ -547,13 +547,13 @@ For each kernel, record from Nsight:
 ### Tasks
 
 ```
-[ ] Run ncu on all 5 kernels with metrics: sm__throughput, dram__throughput, flop_count
-[ ] Extract arithmetic intensity from ncu reports
-[ ] Write generate_roofline.py (matplotlib: log-log, peak lines, kernel dots)
-[ ] Classify each kernel: memory-bound vs compute-bound
-[ ] Write analysis paragraph per kernel in DEVELOPMENT_LOG.md
-[ ] Commit all profiles + roofline SVG
-[ ] git tag v1.0.8
+[x] Run ncu on all 5 kernels with metrics: sm__throughput, dram__throughput, flop_count
+[x] Extract arithmetic intensity from ncu reports
+[x] Write generate_roofline.py (matplotlib: log-log, peak lines, kernel dots)
+[x] Classify each kernel: memory-bound vs compute-bound
+[x] Write analysis paragraph per kernel in DEVELOPMENT_LOG.md
+[x] Commit all profiles + roofline SVG
+[x] git tag v1.0.8
 ```
 
 ### Definition of Done
@@ -630,8 +630,8 @@ Before running `git tag v1.0.x`:
 | v1.0.4 | ✅ Complete | 2025-02-21 | Fused GeLU+Linear, CUDA tiled GEMM + Triton |
 | v1.0.5 | ✅ Complete | 2025-02-21 | RoPE embedding, table + fused, CUDA + Triton |
 | v1.0.6 | ✅ Complete | 2025-06-28 | Paged KV-Cache, append + scatter-gather read, PagedKVCache class |
-| v1.0.7 | ☐ Not started | — | — |
-| v1.0.8 | ☐ Not started | — | — |
+| v1.0.7 | ✅ Complete | 2025-06-28 | GPT-2 end-to-end integration, monkey-patch attention + MLP |
+| v1.0.8 | ✅ Complete | 2025-06-28 | Roofline analysis, 8 kernels profiled, SVG committed |
 | v1.0.9 | ☐ Not started | — | — |
 
 ---

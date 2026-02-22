@@ -7,7 +7,7 @@ Build from source:
 Requires CUDA toolkit and PyTorch with CUDA support.
 """
 
-__version__ = "1.0.7"
+__version__ = "1.0.8"
 
 
 def _load_extension():
@@ -49,8 +49,13 @@ def _load_extension():
         - GPT-2 end-to-end integration via monkey-patching
         - src.integration.gpt2_custom_kernels module
 
+      v1.0.8 (profiling — no new kernels):
+        - Roofline analysis of all kernels on T4
+        - profiling/roofline/generate_roofline.py
+        - profiling/scripts/profile_all.sh
+
     Future versions will add:
-      - Custom multi-head attention layer (v1.0.8)
+      - Polish & ship (v1.0.9)
     """
     try:
         from flashkernel._flashkernel_C import (

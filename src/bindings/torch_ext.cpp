@@ -585,8 +585,8 @@ PYBIND11_MODULE(_flashkernel_C, m) {
           py::arg("seq_lens"), py::arg("max_seq_len"));
 
     // Version info
-    m.attr("__version__") = "1.0.7";
+    m.attr("__version__") = "1.0.8";
 
     // Future kernel bindings:
-    // v1.0.8: custom multi-head attention layer
+    // v1.0.9: polish & ship
 }

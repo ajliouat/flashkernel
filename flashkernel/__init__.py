@@ -7,7 +7,7 @@ Build from source:
 Requires CUDA toolkit and PyTorch with CUDA support.
 """
 
-__version__ = "1.0.9"
+__version__ = "1.0.10"
 
 
 def _load_extension():
@@ -58,6 +58,12 @@ def _load_extension():
         - README with real roofline numbers
         - Blog post published
         - Project page updated with benchmarks
+
+      v1.0.10 (showcase polish — no new kernels):
+        - Project page elevated to 10/10 quality
+        - Blog post DOM fix + cross-links
+        - Project status → Complete
+        - Future roadmap iterations added
     """
     try:
         from flashkernel._flashkernel_C import (

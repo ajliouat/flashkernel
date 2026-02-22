@@ -5,7 +5,7 @@
 
 ---
 
-## Status: v1.0.9 COMPLETE — Polish & Ship
+## Status: v1.0.10 COMPLETE — Showcase Polish
 
 ### Pre-Development Research (Week 0)
 - [ ] Read FlashAttention paper + blog post
@@ -894,5 +894,54 @@ MOD:  ROADMAP.md                                    (v1.0.9 tasks marked, progre
 
 ### Project complete
 FlashKernel v1.0.0–v1.0.9 delivered: scaffold → reduction → FlashAttention → Triton Flash → fused GeLU → RoPE → paged KV-cache → GPT-2 integration → roofline analysis → polish & ship.
+
+---
+
+## v1.0.10 — Showcase Polish (2025-06-28)
+
+### What changed
+Elevated the project page from good to 10/10 showcase quality. Fixed blog post DOM structure. Marked project as complete. Added future roadmap iterations.
+
+### Project page upgrades
+- Added "Why this project" motivation section (3 bullets: scarcest skill, profiling-driven, real verification)
+- Added FlashAttention tiled inner-loop code snippet (CUDA pseudocode in `.code-block`)
+- Added "End-to-end results" section (GPT-2 integration summary: attention + MLP monkey-patch)
+- Added "Reproduce" section (Docker build, test, roofline commands)
+- Added blog post cross-link: "Read the full technical write-up →"
+- Expanded TOC from 5 → 9 items (overview, motivation, kernels, approach, code, benchmarks, e2e, architecture, reproduce)
+
+### Blog post fixes
+- Fixed DOM nesting: mermaid block was between two `<section class="post-body">` elements — moved inside single section
+- Added project page cross-link: "See the project page for the complete kernel inventory"
+
+### Projects index
+- FlashKernel status: `status-building` (amber) → `status-complete` (green #22c55e)
+- Label: "Building" → "Complete"
+- Added `.status-complete` CSS class
+
+### Roadmap
+- Added v1.0.10 spec with all tasks marked complete
+- Added future evolution: v1.1.0 (Tensor Core wmma/mma.sync), v1.2.0 (Multi-GPU NCCL), v1.3.0 (Hopper SM 9.0), v1.4.0 (Speculative decoding), v1.5.0 (FP8 quantised kernels)
+- Updated progress tracker with v1.0.10 row
+
+### Files added/modified
+```
+MOD:  ajliouat.github.io/projects/flashkernel.html  (motivation, code, e2e, reproduce, blog link, TOC)
+MOD:  ajliouat.github.io/projects/index.html         (status-complete class, green badge)
+MOD:  ajliouat.github.io/blog/writing-cuda-kernels-for-transformer-inference.html  (DOM fix, project link)
+MOD:  flashkernel/__init__.py                         (v1.0.10, updated docstring)
+MOD:  pyproject.toml                                  (v1.0.10)
+MOD:  setup.py                                        (v1.0.10)
+MOD:  src/bindings/torch_ext.cpp                      (v1.0.10)
+MOD:  ROADMAP.md                                      (v1.0.10 spec, future iterations, progress tracker)
+```
+
+### What this iteration proved
+1. A project page needs motivation, code, results, and reproducibility to be genuinely useful — not just benchmarks
+2. Cross-linking blog ↔ project page makes both more discoverable
+3. DOM structure matters — the mermaid block sitting between two sections was a subtle rendering regression
+
+### Project complete (final)
+FlashKernel v1.0.0–v1.0.10 delivered: scaffold → reduction → FlashAttention → Triton Flash → fused GeLU → RoPE → paged KV-cache → GPT-2 integration → roofline analysis → polish & ship → showcase polish. Future iterations (v1.1.0–v1.5.0) documented in ROADMAP.md.
 
 ---

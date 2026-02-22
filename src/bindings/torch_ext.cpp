@@ -585,7 +585,7 @@ PYBIND11_MODULE(_flashkernel_C, m) {
           py::arg("seq_lens"), py::arg("max_seq_len"));
 
     // Version info
-    m.attr("__version__") = "1.0.9";
+    m.attr("__version__") = "1.0.10";
 
-    // v1.0.9: Polish & Ship — final release
+    // v1.0.10: Showcase Polish — project page 10/10, blog fix, status complete
 }

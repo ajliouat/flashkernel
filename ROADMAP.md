@@ -602,6 +602,43 @@ For each kernel, record from Nsight:
 
 ---
 
+## v1.0.10 — Showcase Polish
+
+**Goal:** Elevate the project page to 10/10 showcase quality, fix blog post DOM issues, mark project as complete, and add future roadmap iterations.
+
+### Deliverables
+- Project page with 9 sections: overview, motivation, kernel inventory, technical approach, core algorithm (code), roofline benchmarks, E2E results, architecture diagram, reproduce
+- Blog post DOM fix (mermaid block moved inside post-body) + cross-links between blog ↔ project page
+- Projects index status: "Building" → "Complete" with green badge
+- Future roadmap: v1.1.0–v1.5.0 aspirational iterations
+
+### Tasks
+
+```
+[x] Add "Why this project" motivation section to flashkernel.html
+[x] Add FlashAttention tiled inner-loop code snippet
+[x] Add "End-to-end results" section (GPT-2 integration summary)
+[x] Add "Reproduce" section with Docker commands
+[x] Add blog post cross-link to project page
+[x] Expand TOC from 5 → 9 items
+[x] Fix blog post DOM: move mermaid block inside post-body section
+[x] Add project page cross-link to blog post
+[x] Update projects/index.html: status-building → status-complete (green)
+[x] Bump version to 1.0.10 in all 4 files
+[x] Add future roadmap iterations (v1.1.0–v1.5.0)
+[x] Update DEVELOPMENT_LOG.md
+[x] git tag v1.0.10
+```
+
+### Definition of Done
+- ✅ Project page has 9 TOC sections with real content
+- ✅ Blog post has correct DOM structure + bidirectional cross-links
+- ✅ Projects index shows green "Complete" status
+- ✅ Future roadmap appended
+- ✅ Tagged `v1.0.10`
+
+---
+
 ## Release Checklist (use for every tag)
 
 Before running `git tag v1.0.x`:
@@ -633,7 +670,60 @@ Before running `git tag v1.0.x`:
 | v1.0.7 | ✅ Complete | 2025-06-28 | GPT-2 end-to-end integration, monkey-patch attention + MLP |
 | v1.0.8 | ✅ Complete | 2025-06-28 | Roofline analysis, 8 kernels profiled, SVG committed |
 | v1.0.9 | ✅ Complete | 2025-06-28 | Polish & Ship — README, blog post, project page with real data |
+| v1.0.10 | ✅ Complete | 2025-06-28 | Showcase Polish — project page 10/10, blog fix, status complete |
 
 ---
 
-*Ship v1.0.0 this week. One release at a time. No skipping ahead.*
+## Future Evolution
+
+> These iterations are aspirational — they represent natural next steps for
+> the project if development resumes. Not currently scheduled.
+
+### v1.1.0 — Tensor Core wmma / mma.sync
+
+**Goal:** Replace hand-rolled shared-memory matmul with Tensor Core intrinsics (`wmma::mma_sync` or inline PTX `mma.sync`) for FlashAttention and fused GeLU.
+
+- Target: flash_attention 59% → 75%+ of fp16 peak
+- mma.sync m16n8k16 tiles for fp16
+- Compare wmma (high-level) vs inline PTX (low-level)
+- Update roofline with new data points
+
+### v1.2.0 — Multi-GPU with NCCL
+
+**Goal:** Scale kernels across multiple GPUs using NCCL for tensor-parallel attention and pipeline-parallel MLP.
+
+- Ring all-reduce for gradient sync
+- Tensor parallelism: split attention heads across GPUs
+- Pipeline parallelism: layer sharding
+- Benchmark on 2× and 4× GPU configurations
+
+### v1.3.0 — Hopper SM 9.0 Port
+
+**Goal:** Port kernels to NVIDIA Hopper architecture (H100) leveraging SM 9.0 features.
+
+- TMA (Tensor Memory Accelerator) for async bulk copies
+- Warpgroup MMA for larger tile sizes
+- Thread Block Clusters for cross-SM cooperation
+- New roofline against Hopper ceilings (fp16 ~990 TFLOPS, HBM3 3.35 TB/s)
+
+### v1.4.0 — Speculative Decoding
+
+**Goal:** Implement speculative decoding with draft model + verification using custom kernels.
+
+- Small draft model (distilled GPT-2) generates candidate tokens
+- Large model verifies in parallel using FlashAttention
+- Tree-based speculation with custom acceptance kernel
+- Measure tokens/sec improvement at fixed quality
+
+### v1.5.0 — FP8 Quantised Kernels
+
+**Goal:** Add FP8 (E4M3/E5M2) kernel variants for Hopper's native FP8 Tensor Cores.
+
+- FP8 FlashAttention with per-tensor scaling
+- FP8 fused GeLU+Linear with mixed-precision accumulation
+- Quantisation-aware benchmarking: accuracy vs throughput tradeoff
+- Compare against INT8 and FP16 baselines
+
+---
+
+*v1.0.0–v1.0.10 delivered. Future iterations begin when development resumes.*
